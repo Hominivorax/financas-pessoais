@@ -339,7 +339,7 @@ function Dashboard({ session }) {
   };
 
   // ── Forms ──────────────────────────────────────────────────────────────
-  const E0 = { type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"1" };
+  const E0 = { modo:"unico", type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"2", endYM:addM(TODAY_YM,11) };
   const R0 = { type:"expense", cat:"Moradia", amount:"", startYM:TODAY_YM, endYM:addM(TODAY_YM,11), note:"" };
   const I0 = { type:"Renda Fixa", name:"", amount:"", ym:TODAY_YM, returnRate:"" };
   const [txF, setTxF] = useState(E0);
@@ -486,10 +486,13 @@ function Dashboard({ session }) {
     notify(parc>1?`${parc} parcelas lançadas ✓`:"Lançamento adicionado ✓");
   };
 
-  const addRec = async () => {
-    if (!+recF.amount||!recF.note) return notify("Preencha todos os campos.",false);
-    await supabase.from("recurrents").insert({ user_id:userId, type:recF.type, cat:recF.cat, amount:+recF.amount, start_ym:recF.startYM, end_ym:recF.endYM, note:recF.note });
-    await loadAll(); setRecF(R0); notify("Recorrente criado ✓");
+  const addRec = async (fromTxF = false) => {
+    const f = fromTxF ? { type:txF.type, cat:txF.cat, amount:txF.amount, startYM:txF.ym, endYM:txF.endYM||addM(txF.ym,11), note:txF.note } : recF;
+    if (!+f.amount || !f.note) return notify("Preencha valor e descrição.", false);
+    await supabase.from("recurrents").insert({ user_id:userId, type:f.type, cat:f.cat, amount:+f.amount, start_ym:f.startYM, end_ym:f.endYM, note:f.note });
+    await loadAll();
+    if (fromTxF) setTxF(E0); else setRecF(R0);
+    notify("Recorrente criado ✓");
   };
 
   const addInv = async () => {
@@ -651,50 +654,145 @@ function Dashboard({ session }) {
 
         {/* ══ LANÇAMENTOS ════════════════════════════════════════════════ */}
         {tab==="lancamentos" && <>
-          <div style={S.card}>
+          {/* ── Formulário Unificado ── */}
+          <div style={{...S.card, marginBottom:14}}>
             <div style={S.secT}>Novo Lançamento</div>
-            <div style={S.row}>
-              <div style={S.fGrp}>
-                <label style={S.fLbl}>Tipo</label>
-                <select style={S.sel} value={txF.type} onChange={e=>setTxF(f=>({...f,type:e.target.value,cat:e.target.value==="income"?CATS_INC[0]:CATS_EXP[0]}))}>
-                  <option value="income">Receita</option><option value="expense">Despesa</option>
-                </select>
-              </div>
-              <div style={S.fGrp}>
+
+            {/* Linha 1: Tipo de lançamento (botões visuais) */}
+            <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+              {[
+                {val:"unico",   icon:"💸", label:"Despesa única"},
+                {val:"receita", icon:"💰", label:"Receita"},
+                {val:"parcelado",icon:"💳",label:"Parcelado"},
+                {val:"recorrente",icon:"🔄",label:"Recorrente"},
+              ].map(op=>{
+                const active = txF.modo === op.val;
+                return(
+                  <button key={op.val} onClick={()=>setTxF(f=>({...f,modo:op.val,
+                    type: op.val==="receita"?"income":"expense",
+                    cat:  op.val==="receita"?CATS_INC[0]:CATS_EXP[0],
+                    parcelas:"1",
+                  }))} style={{
+                    display:"flex",alignItems:"center",gap:6,
+                    padding:"9px 16px",borderRadius:10,border:"none",cursor:"pointer",
+                    fontSize:13,fontWeight:700,transition:"all 0.15s",
+                    background: active?`rgba(${hexRgb(
+                      op.val==="receita"?P.income:
+                      op.val==="parcelado"?P.surplus:
+                      op.val==="recorrente"?P.invest:P.expense
+                    )},0.18)`:"rgba(255,255,255,0.05)",
+                    color: active?(
+                      op.val==="receita"?P.income:
+                      op.val==="parcelado"?P.surplus:
+                      op.val==="recorrente"?P.invest:P.expense
+                    ):P.muted,
+                    border: active?`1.5px solid rgba(${hexRgb(
+                      op.val==="receita"?P.income:
+                      op.val==="parcelado"?P.surplus:
+                      op.val==="recorrente"?P.invest:P.expense
+                    )},0.4)`:`1.5px solid ${P.border}`,
+                  }}>
+                    <span>{op.icon}</span>{op.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Linha 2: campos dinâmicos conforme modo */}
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+
+              {/* Categoria */}
+              <div style={{...S.fGrp,minWidth:160}}>
                 <label style={S.fLbl}>Categoria</label>
                 <select style={S.sel} value={txF.cat} onChange={e=>setTxF(f=>({...f,cat:e.target.value}))}>
-                  {(txF.type==="income"?CATS_INC:CATS_EXP).map(c=><option key={c}>{c}</option>)}
+                  {(txF.modo==="receita"?CATS_INC:CATS_EXP).map(c=><option key={c}>{c}</option>)}
                 </select>
               </div>
-              <div style={S.fGrp}>
-                <label style={S.fLbl}>Valor Total</label>
-                <input style={S.inp} type="number" placeholder="0,00" value={txF.amount} onChange={e=>setTxF(f=>({...f,amount:e.target.value}))}/>
+
+              {/* Valor */}
+              <div style={{...S.fGrp,minWidth:130}}>
+                <label style={S.fLbl}>
+                  {txF.modo==="parcelado"?"Valor Total":"Valor (R$)"}
+                </label>
+                <input style={S.inp} type="number" placeholder="0,00" value={txF.amount}
+                  onChange={e=>setTxF(f=>({...f,amount:e.target.value}))}/>
               </div>
-              <div style={{...S.fGrp,maxWidth:100}}>
-                <label style={S.fLbl}>Parcelas</label>
-                <input style={S.inp} type="number" min="1" max="60" value={txF.parcelas} onChange={e=>setTxF(f=>({...f,parcelas:e.target.value}))}/>
+
+              {/* Parcelas — só para parcelado */}
+              {txF.modo==="parcelado"&&(
+                <div style={{...S.fGrp,maxWidth:110}}>
+                  <label style={S.fLbl}>Nº de Parcelas</label>
+                  <input style={S.inp} type="number" min="2" max="60" value={txF.parcelas}
+                    onChange={e=>setTxF(f=>({...f,parcelas:e.target.value}))}/>
+                </div>
+              )}
+
+              {/* Mês início */}
+              <div style={{...S.fGrp,minWidth:140}}>
+                <label style={S.fLbl}>
+                  {txF.modo==="recorrente"?"Mês de Início":
+                   txF.modo==="parcelado"?"1ª Parcela em":"Mês"}
+                </label>
+                <input style={S.inp} type="month" value={txF.ym}
+                  onChange={e=>setTxF(f=>({...f,ym:e.target.value}))}/>
               </div>
-              <div style={S.fGrp}>
-                <label style={S.fLbl}>1ª Parcela em</label>
-                <input style={S.inp} type="month" value={txF.ym} onChange={e=>setTxF(f=>({...f,ym:e.target.value}))}/>
-              </div>
-              <div style={{...S.fGrp,flex:2}}>
+
+              {/* Mês fim — só para recorrente */}
+              {txF.modo==="recorrente"&&(
+                <div style={{...S.fGrp,minWidth:140}}>
+                  <label style={S.fLbl}>Mês de Encerramento</label>
+                  <input style={S.inp} type="month" value={txF.endYM||addM(txF.ym,11)}
+                    onChange={e=>setTxF(f=>({...f,endYM:e.target.value}))}/>
+                </div>
+              )}
+
+              {/* Descrição */}
+              <div style={{...S.fGrp,flex:2,minWidth:160}}>
                 <label style={S.fLbl}>Descrição</label>
-                <input style={S.inp} placeholder="Ex: TV nova, Bônus..." value={txF.note} onChange={e=>setTxF(f=>({...f,note:e.target.value}))}/>
+                <input style={S.inp} placeholder={
+                  txF.modo==="parcelado"?"Ex: TV Samsung, Sofá...":
+                  txF.modo==="recorrente"?"Ex: Salário, Plano de saúde...":
+                  txF.modo==="receita"?"Ex: Salário, Freelance...":
+                  "Ex: Mercado, Gasolina..."
+                } value={txF.note} onChange={e=>setTxF(f=>({...f,note:e.target.value}))}/>
               </div>
-              <button style={S.btn()} onClick={addTx}>{+txF.parcelas>1?`+ ${txF.parcelas}x`:"+ Adicionar"}</button>
+
+              {/* Botão */}
+              <button style={S.btn(
+                txF.modo==="receita"?P.income:
+                txF.modo==="parcelado"?P.surplus:
+                txF.modo==="recorrente"?P.invest:P.expense
+              )} onClick={()=>{
+                if(txF.modo==="recorrente") addRec(true);
+                else addTx();
+              }}>
+                {txF.modo==="parcelado"?`+ ${txF.parcelas||"?"}x Parcelas`:
+                 txF.modo==="recorrente"?"+ Criar Recorrente":
+                 txF.modo==="receita"?"+ Adicionar Receita":
+                 "+ Adicionar Despesa"}
+              </button>
             </div>
-            {+txF.parcelas>1&&+txF.amount>0&&(
-              <div style={{fontSize:13,color:P.surplus,padding:"8px 14px",background:"rgba(147,197,253,0.08)",borderRadius:10,fontWeight:600}}>
-                💳 {txF.parcelas}x de <strong>{fmt(+txF.amount/+txF.parcelas)}</strong> a partir de <strong>{lbl(txF.ym)}</strong>
+
+            {/* Preview parcelado */}
+            {txF.modo==="parcelado"&&+txF.parcelas>1&&+txF.amount>0&&(
+              <div style={{marginTop:10,fontSize:13,color:P.surplus,padding:"8px 14px",background:"rgba(147,197,253,0.08)",borderRadius:10,fontWeight:600}}>
+                💳 {txF.parcelas}x de <strong>{fmt(+txF.amount/+txF.parcelas)}</strong> — de <strong>{lbl(txF.ym)}</strong> até <strong>{lbl(addM(txF.ym,(+txF.parcelas||1)-1))}</strong>
+              </div>
+            )}
+
+            {/* Preview recorrente */}
+            {txF.modo==="recorrente"&&+txF.amount>0&&txF.endYM&&(
+              <div style={{marginTop:10,fontSize:13,color:P.invest,padding:"8px 14px",background:"rgba(196,181,253,0.08)",borderRadius:10,fontWeight:600}}>
+                🔄 <strong>{fmt(+txF.amount)}/mês</strong> de <strong>{lbl(txF.ym)}</strong> até <strong>{lbl(txF.endYM)}</strong>
               </div>
             )}
           </div>
 
-          <div style={{...S.card,marginTop:14}}>
+          {/* ── Lista de Lançamentos ── */}
+          <div style={S.card}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
               <div style={S.secT}>
-                Todos os Lançamentos
+                Lançamentos
                 {filterCat!=="all"&&<span style={{fontSize:11,color:P.gold,marginLeft:8,fontWeight:700,textTransform:"none",letterSpacing:0}}>• {filterCat}</span>}
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
