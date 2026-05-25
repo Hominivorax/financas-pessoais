@@ -14,9 +14,12 @@ const supabase = createClient(SUPA_URL, SUPA_KEY);
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt = v => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v ?? 0);
 const MO = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
-const YEAR = 2026, CUR = 4;
-const toYM = i => `${YEAR}-${String(i + 1).padStart(2, "0")}`;
-const TODAY_YM = toYM(CUR);
+const SEED_YEAR = 2026;                          // ano dos dados históricos
+const _now  = new Date();
+const YEAR  = _now.getFullYear();                // ano atual real
+const CUR   = _now.getMonth();                   // mês atual real (0=Jan)
+const toYM  = i => `${SEED_YEAR}-${String(i + 1).padStart(2, "0")}`;  // para dados 2026
+const TODAY_YM = `${YEAR}-${String(CUR + 1).padStart(2, "0")}`;       // sempre o mês real
 function addM(s, n) {
   const [y, m] = s.split("-").map(Number);
   const d = new Date(y, m - 1 + n, 1);
@@ -37,7 +40,12 @@ function useWidth() {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const CATS_EXP = ["Moradia","Obra/Reforma","Alimentação","Transporte","Assinaturas","Prof./Impostos","Seguros","Lazer","Educação Filhos","Doações","Outros"];
+const CATS_EXP = [
+  "Moradia","Obra/Reforma","Alimentação","Transporte","Assinaturas",
+  "Impostos","Veículo","Seguros / Plano de Saúde","Lazer",
+  "Educação / Filhos","Doações","Aluguel","Condomínio","Água","Luz",
+  "Telefone","Outros"
+];
 const CATS_INC = ["Receita Profissional","Outras Receitas"];
 const INVEST_T = ["Renda Fixa","Ações","FIIs","Cripto","Poupança","Tesouro Direto"];
 
@@ -150,13 +158,15 @@ const DI = [
 
 function buildSeedRows(userId) {
   const rows = [];
+  // Se estamos em 2026, usa o mês real; se passamos de 2026, tudo confirmado
+  const curForSeed = YEAR === SEED_YEAR ? CUR : (YEAR > SEED_YEAR ? 11 : -1);
   DE.forEach(([nm, vs, isVar, realM]) => {
     for (let i = 0; i < 12; i++) {
       let amount, confirmed;
       if (isVar) {
-        if (i === CUR && realM != null) { amount = realM; confirmed = true; }
-        else { amount = vs[i]; confirmed = i < CUR; }
-      } else { amount = vs[i]; confirmed = i <= CUR; }
+        if (i === curForSeed && realM != null) { amount = realM; confirmed = true; }
+        else { amount = vs[i]; confirmed = i < curForSeed; }
+      } else { amount = vs[i]; confirmed = i <= curForSeed; }
       if (!amount) continue;
       rows.push({ user_id: userId, type: "expense", cat: catExp(nm), amount: Math.round(amount * 100) / 100, ym: toYM(i), note: nm, confirmed, is_var: !!isVar });
     }
@@ -164,7 +174,7 @@ function buildSeedRows(userId) {
   DI.forEach(([nm, vs]) => {
     for (let i = 0; i < 12; i++) {
       const amount = vs[i]; if (!amount) continue;
-      rows.push({ user_id: userId, type: "income", cat: nm === "Outros" ? "Outras Receitas" : "Receita Profissional", amount: Math.round(amount * 100) / 100, ym: toYM(i), note: nm, confirmed: i <= CUR, is_var: false });
+      rows.push({ user_id: userId, type: "income", cat: nm === "Outros" ? "Outras Receitas" : "Receita Profissional", amount: Math.round(amount * 100) / 100, ym: toYM(i), note: nm, confirmed: i <= curForSeed, is_var: false });
     }
   });
   return rows;
@@ -181,8 +191,10 @@ function buildInstallmentSummary() {
     const lastI  = activeMonths[activeMonths.length - 1].i;
     const monthlyVal = activeMonths[0].v;
     const total = activeMonths.length;
-    const paid  = activeMonths.filter(x => x.i < CUR).length;
-    const paidInCur = activeMonths.find(x => x.i === CUR) ? 1 : 0;
+    // CUR dinâmico: só conta como pago se o mês do seed (2026) já passou no calendário real
+    const curForSeed = YEAR === SEED_YEAR ? CUR : (YEAR > SEED_YEAR ? 11 : -1);
+    const paid  = activeMonths.filter(x => x.i < curForSeed).length;
+    const paidInCur = activeMonths.find(x => x.i === curForSeed) ? 1 : 0;
     const paidTotal = paid + paidInCur;
     const remaining = total - paidTotal;
     const totalValue = activeMonths.reduce((s, x) => s + x.v, 0);
@@ -298,6 +310,7 @@ function Dashboard({ session }) {
   const [tab,       setTab]       = useState("dashboard");
   const [notif,     setNotif]     = useState(null);
   const [filterYM,  setFilterYM]  = useState("all");
+  const [filterCat, setFilterCat] = useState("all"); // for drill-down
   const [expandedCF,setExpandedCF]= useState({});
 
   const notify = (msg, ok = true) => { setNotif({ msg, ok }); setTimeout(() => setNotif(null), 3000); };
@@ -348,7 +361,18 @@ function Dashboard({ session }) {
   }, [txs, recs]);
 
   const allYMs = useMemo(() => [...new Set(allE.map(e => e.ym))].sort(), [allE]);
-  const filtered = useMemo(() => filterYM === "all" ? allE : allE.filter(e => e.ym === filterYM), [allE, filterYM]);
+  const filtered = useMemo(() => {
+    let res = filterYM === "all" ? allE : allE.filter(e => e.ym === filterYM);
+    if (filterCat !== "all") res = res.filter(e => e.cat === filterCat);
+    return res;
+  }, [allE, filterYM, filterCat]);
+
+  // Drill-down: click pie slice → go to lançamentos filtered by that cat
+  const handlePieDrillDown = (data) => {
+    setFilterCat(data.name);
+    setFilterYM("all");
+    setTab("lancamentos");
+  };
 
   const totInc  = filtered.filter(e => e.type === "income").reduce((s, e) => s + +e.amount, 0);
   const totExp  = filtered.filter(e => e.type === "expense").reduce((s, e) => s + +e.amount, 0);
@@ -383,12 +407,19 @@ function Dashboard({ session }) {
     })
   , [allE]);
 
-  const investProj = useMemo(()=>
-    Array.from({length:12},(_,m)=>({
-      mes:MO[(new Date().getMonth()+m)%12],
-      Patrimônio:Math.round(invs.reduce((s,i)=>s + +i.amount*Math.pow(1+ +i.return_rate/100/12,m+1),0)),
-    }))
-  ,[invs]);
+  const investByType = useMemo(() => {
+    const types = [...new Set(invs.map(i => i.type))];
+    return Array.from({length:12}, (_,m) => {
+      const point = { mes: MO[(new Date().getMonth()+m)%12] };
+      types.forEach(t => {
+        const typeInvs = invs.filter(i => i.type === t);
+        point[t] = Math.round(typeInvs.reduce((s,i) => s + +i.amount * Math.pow(1 + +i.return_rate/100/12, m+1), 0));
+      });
+      return point;
+    });
+  }, [invs]);
+
+  const investTypes = useMemo(() => [...new Set(invs.map(i => i.type))], [invs]);
 
   const installSummary = useMemo(() => buildInstallmentSummary(), []);
 
@@ -495,17 +526,6 @@ function Dashboard({ session }) {
 
       <main style={{ padding: mob?"14px":"20px 24px", maxWidth:1500, margin:"0 auto" }}>
 
-        {/* Seed banner */}
-        {txs.length === 0 && !seeding && (
-          <div style={{ ...S.card, marginBottom:16, background:"rgba(251,191,36,0.07)", border:`1px solid rgba(${hexRgb(P.gold)},0.25)`, display:"flex", flexDirection: mob?"column":"row", alignItems: mob?"flex-start":"center", justifyContent:"space-between", gap:12 }}>
-            <div>
-              <div style={{ fontWeight:800, color:P.gold, marginBottom:4, fontSize:15 }}>Banco de dados vazio</div>
-              <div style={{ fontSize:13, color:P.sub }}>Clique para carregar seus dados de 2026.</div>
-            </div>
-            <button style={S.btn()} onClick={seedData}>Carregar dados de 2026</button>
-          </div>
-        )}
-        {seeding && <div style={{ ...S.card, marginBottom:16, textAlign:"center", color:P.gold, fontSize:14, fontWeight:700 }}>⏳ Carregando dados... aguarde.</div>}
 
         {/* ══ DASHBOARD ══════════════════════════════════════════════════ */}
         {tab==="dashboard" && <>
@@ -549,14 +569,16 @@ function Dashboard({ session }) {
               </ResponsiveContainer>
             </div>
             <div style={S.card}>
-              <div style={S.secT}>Despesas por Categoria</div>
+              <div style={S.secT}>Despesas por Categoria <span style={{fontSize:10,color:P.muted,fontWeight:500,textTransform:"none",letterSpacing:0}}>— clique numa fatia para ver os lançamentos</span></div>
               {expCats.length>0?(
                 <ResponsiveContainer width="100%" height={mob?200:240}>
                   <PieChart>
                     <Pie data={expCats} cx="50%" cy="50%" innerRadius={mob?45:55} outerRadius={mob?80:90}
                       dataKey="value" nameKey="name" paddingAngle={2}
+                      onClick={handlePieDrillDown}
+                      style={{cursor:"pointer"}}
                       label={({name,percent})=>percent>0.05?`${(percent*100).toFixed(0)}%`:""}
-                      labelLine={false} style={{fontSize:11,fill:P.sub,fontWeight:700}}>
+                      labelLine={false} style={{fontSize:11,fill:P.sub,fontWeight:700,cursor:"pointer"}}>
                       {expCats.map((_,i)=><Cell key={i} fill={PIE_C[i%PIE_C.length]}/>)}
                     </Pie>
                     <Tooltip formatter={v=>fmt(v)}/>
@@ -625,11 +647,24 @@ function Dashboard({ session }) {
 
           <div style={{...S.card,marginTop:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
-              <div style={S.secT}>Todos os Lançamentos</div>
-              <select style={{...S.sel,width:160}} value={filterYM} onChange={e=>setFilterYM(e.target.value)}>
-                <option value="all">Todos os meses</option>
-                {allYMs.map(m=><option key={m} value={m}>{lbl(m)}</option>)}
-              </select>
+              <div style={S.secT}>
+                Todos os Lançamentos
+                {filterCat!=="all"&&<span style={{fontSize:11,color:P.gold,marginLeft:8,fontWeight:700,textTransform:"none",letterSpacing:0}}>• {filterCat}</span>}
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <select style={{...S.sel,width:150}} value={filterYM} onChange={e=>setFilterYM(e.target.value)}>
+                  <option value="all">Todos os meses</option>
+                  {allYMs.map(m=><option key={m} value={m}>{lbl(m)}</option>)}
+                </select>
+                <select style={{...S.sel,width:170}} value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+                  <option value="all">Todas as categorias</option>
+                  {CATS_EXP.map(c=><option key={c}>{c}</option>)}
+                  {CATS_INC.map(c=><option key={c}>{c}</option>)}
+                </select>
+                {filterCat!=="all"&&(
+                  <button style={{...S.btn(P.muted),padding:"8px 12px",fontSize:12,color:P.text}} onClick={()=>setFilterCat("all")}>✕ Limpar</button>
+                )}
+              </div>
             </div>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",minWidth:mob?500:0}}>
@@ -864,6 +899,30 @@ function Dashboard({ session }) {
             </div>
           </div>
           {invs.length>0&&<div style={{...S.card,marginTop:14}}>
+            <div style={S.secT}>Crescimento Projetado por Tipo de Ativo — 12 meses</div>
+            <ResponsiveContainer width="100%" height={mob?220:260}>
+              <AreaChart data={investByType}>
+                <defs>
+                  {investTypes.map((t,i)=>(
+                    <linearGradient key={t} id={`ig${i}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.35}/>
+                      <stop offset="100%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.05}/>
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                <XAxis dataKey="mes" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={70}/>
+                <Tooltip content={<CTooltip/>}/>
+                <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                {investTypes.map((t,i)=>(
+                  <Area key={t} type="monotone" dataKey={t} stackId="1"
+                    stroke={PIE_C[i%PIE_C.length]} fill={`url(#ig${i})`} strokeWidth={2}/>
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>}
+          {invs.length>0&&<div style={{...S.card,marginTop:14}}>
             <div style={S.secT}>Carteira</div>
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:mob?500:0}}>
@@ -943,15 +1002,26 @@ function Dashboard({ session }) {
 
             {invs.length>0?(
               <div style={S.card}>
-                <div style={S.secT}>Crescimento Projetado dos Investimentos</div>
+                <div style={S.secT}>Patrimônio por Tipo de Ativo — 12 meses</div>
                 <ResponsiveContainer width="100%" height={mob?200:240}>
-                  <AreaChart data={investProj}>
-                    <defs><linearGradient id="gV" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.invest} stopOpacity={0.35}/><stop offset="100%" stopColor={P.invest} stopOpacity={0.02}/></linearGradient></defs>
+                  <AreaChart data={investByType}>
+                    <defs>
+                      {investTypes.map((t,i)=>(
+                        <linearGradient key={t} id={`gfig${i}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.35}/>
+                          <stop offset="100%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.05}/>
+                        </linearGradient>
+                      ))}
+                    </defs>
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
                     <XAxis dataKey="mes" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
                     <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={70}/>
                     <Tooltip content={<CTooltip/>}/>
-                    <Area type="monotone" dataKey="Patrimônio" stroke={P.invest} fill="url(#gV)" strokeWidth={2.5} dot={{r:4,fill:P.invest,strokeWidth:0}}/>
+                    <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                    {investTypes.map((t,i)=>(
+                      <Area key={t} type="monotone" dataKey={t} stackId="1"
+                        stroke={PIE_C[i%PIE_C.length]} fill={`url(#gfig${i})`} strokeWidth={2}/>
+                    ))}
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -969,4 +1039,3 @@ function Dashboard({ session }) {
     </div>
   );
 }
-
