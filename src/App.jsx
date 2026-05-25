@@ -562,7 +562,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
       const resp = await fetch('/api/claude-proxy', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,messages})
+        body: JSON.stringify({model:'claude-sonnet-4-5',max_tokens:4000,messages})
       });
       const data = await resp.json();
       if (data.error) throw new Error(data.error.message);
