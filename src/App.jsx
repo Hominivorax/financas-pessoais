@@ -421,7 +421,29 @@ function Dashboard({ session }) {
 
   const investTypes = useMemo(() => [...new Set(invs.map(i => i.type))], [invs]);
 
-  const installSummary = useMemo(() => buildInstallmentSummary(), []);
+  // Parcelas dinâmicas — baseadas nos lançamentos reais do usuário no banco
+  const installSummary = useMemo(() => {
+    // Agrupa lançamentos que têm i_group (parcelados)
+    const groups = {};
+    txs.filter(t => t.i_group).forEach(t => {
+      if (!groups[t.i_group]) groups[t.i_group] = [];
+      groups[t.i_group].push(t);
+    });
+
+    return Object.entries(groups).map(([gid, items]) => {
+      const sorted = [...items].sort((a,b) => a.ym.localeCompare(b.ym));
+      const total  = sorted.length;
+      const paid   = sorted.filter(t => t.confirmed).length;
+      const remaining = total - paid;
+      if (remaining <= 0) return null;
+      const monthlyVal = +sorted[0].amount;
+      const totalValue = sorted.reduce((s,t) => s + +t.amount, 0);
+      const lastYM  = sorted[total-1].ym;
+      const firstYM = sorted[0].ym;
+      const name    = (sorted[0].note || "").replace(/\s\d+\/\d+$/, ""); // remove "2/6"
+      return { name, total, paid, remaining, monthlyVal, totalValue, firstYM, lastYM, cat: sorted[0].cat };
+    }).filter(Boolean).sort((a,b) => b.monthlyVal - a.monthlyVal);
+  }, [txs]);
 
   // ── CRUD ───────────────────────────────────────────────────────────────
   const addTx = async () => {
