@@ -25,6 +25,17 @@ function addM(s, n) {
 function lbl(s) { const [y, m] = s.split("-"); return `${MO[+m - 1]}/${y.slice(2)}`; }
 function hexRgb(h) { return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)).join(","); }
 
+// ── Hook: window width ────────────────────────────────────────────────────────
+function useWidth() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(() => {
+    const fn = () => setW(window.innerWidth);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return w;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const CATS_EXP = ["Moradia","Obra/Reforma","Alimentação","Transporte","Assinaturas","Prof./Impostos","Seguros","Lazer","Educação Filhos","Doações","Outros"];
 const CATS_INC = ["Receita Profissional","Outras Receitas"];
@@ -45,10 +56,22 @@ function catExp(n) {
   return "Outros";
 }
 
-const P = { income: "#4ade80", expense: "#f87171", surplus: "#60a5fa", invest: "#a78bfa", gold: "#d4a843" };
-const PIE_C = ["#f59e0b","#60a5fa","#4ade80","#f87171","#a78bfa","#34d399","#fb923c","#e879f9","#38bdf8","#a3e635","#c084fc"];
+// ── Palette — brighter, higher contrast ───────────────────────────────────────
+const P = {
+  income:  "#6ee7a0",  // brighter green
+  expense: "#fca5a5",  // brighter red
+  surplus: "#93c5fd",  // brighter blue
+  invest:  "#c4b5fd",  // brighter purple
+  gold:    "#fbbf24",  // brighter gold
+  text:    "#f4f0e8",  // bright main text
+  sub:     "#c4bfb5",  // bright secondary text
+  muted:   "#8a8480",  // muted text
+  border:  "rgba(255,255,255,0.12)",
+  cardBg:  "rgba(255,255,255,0.05)",
+};
+const PIE_C = ["#fbbf24","#93c5fd","#6ee7a0","#fca5a5","#c4b5fd","#6ee7b7","#fdba74","#f0abfc","#67e8f9","#bef264","#fb923c"];
 
-// ── Seed data (loaded once on first login) ────────────────────────────────────
+// ── Seed data ─────────────────────────────────────────────────────────────────
 const DE = [
   ["Financiamento Casa/Familia",[6240,6240,6240,6240,6240,6240,6240,6240,6240,6240,6240,6240]],
   ["Seguro Residencial Santander",[91.86,91.86,91.86,91.86,1007.20,0,0,0,0,0,0,0]],
@@ -147,33 +170,61 @@ function buildSeedRows(userId) {
   return rows;
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-const card  = { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: "18px 22px" };
-const inp   = { background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 11px", color: "#e5e0d5", fontSize: 13, width: "100%", outline: "none", boxSizing: "border-box" };
-const sel   = { background: "rgba(12,12,18,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 11px", color: "#e5e0d5", fontSize: 13, width: "100%", outline: "none", cursor: "pointer", boxSizing: "border-box" };
-const th    = { textAlign: "left", color: "#555", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: 1, padding: "7px 10px", borderBottom: "1px solid rgba(255,255,255,0.06)" };
-const td    = { padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", verticalAlign: "middle" };
-const secT  = { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 2, color: P.gold, marginBottom: 12 };
-const fGrp  = { display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 90 };
-const fLbl  = { fontSize: 10, color: "#666", letterSpacing: 1, textTransform: "uppercase" };
-const row   = { display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 8 };
-const btn   = (c = P.gold) => ({ background: `linear-gradient(135deg,${c},${c}bb)`, border: "none", borderRadius: 8, padding: "9px 16px", color: "#0a0a0f", fontWeight: 700, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" });
-const btnD  = { background: "transparent", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 6, padding: "3px 8px", color: "#f87171", fontSize: 11, cursor: "pointer" };
-const bdg   = (c) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: `rgba(${hexRgb(c)},0.15)`, color: c, border: `1px solid rgba(${hexRgb(c)},0.25)` });
-const statC = (c) => ({ background: `linear-gradient(135deg,rgba(${hexRgb(c)},0.08),rgba(0,0,0,0.3))`, border: `1px solid rgba(${hexRgb(c)},0.25)`, borderRadius: 14, padding: "16px 20px" });
+// ── Installment summary from seed (for the Parcelas tab) ─────────────────────
+// Each entry: name, total months active, first month, last month, monthly value, total value
+function buildInstallmentSummary() {
+  const result = [];
+  DE.forEach(([nm, vs]) => {
+    const activeMonths = vs.map((v, i) => ({ i, v })).filter(x => x.v > 0);
+    if (activeMonths.length < 2) return; // skip one-off or empty
+    const firstI = activeMonths[0].i;
+    const lastI  = activeMonths[activeMonths.length - 1].i;
+    const monthlyVal = activeMonths[0].v;
+    const total = activeMonths.length;
+    const paid  = activeMonths.filter(x => x.i < CUR).length;
+    const paidInCur = activeMonths.find(x => x.i === CUR) ? 1 : 0;
+    const paidTotal = paid + paidInCur;
+    const remaining = total - paidTotal;
+    const totalValue = activeMonths.reduce((s, x) => s + x.v, 0);
+    if (remaining <= 0) return; // already finished
+    result.push({
+      name: nm,
+      total,
+      paid: paidTotal,
+      remaining,
+      monthlyVal,
+      totalValue,
+      firstYM: toYM(firstI),
+      lastYM:  toYM(lastI),
+      cat: catExp(nm),
+    });
+  });
+  return result.sort((a, b) => b.monthlyVal - a.monthlyVal);
+}
 
+// ── Tooltip ───────────────────────────────────────────────────────────────────
 const CTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: "rgba(10,10,15,0.97)", border: "1px solid rgba(212,168,67,0.3)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#e5e0d5" }}>
-      <p style={{ color: P.gold, fontWeight: 700, marginBottom: 4 }}>{label}</p>
-      {payload.map((p, i) => <p key={i} style={{ color: p.color, margin: "2px 0" }}>{p.name}: {fmt(p.value)}</p>)}
+    <div style={{ background: "rgba(10,10,18,0.98)", border: `1px solid rgba(${hexRgb(P.gold)},0.4)`, borderRadius: 10, padding: "10px 16px", fontSize: 13, color: P.text }}>
+      <p style={{ color: P.gold, fontWeight: 800, marginBottom: 6 }}>{label}</p>
+      {payload.map((p, i) => <p key={i} style={{ color: p.color, margin: "3px 0", fontWeight: 600 }}>{p.name}: {fmt(p.value)}</p>)}
     </div>
   );
 };
 
-// ── Login Screen ──────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin }) {
+// ── Progress bar ──────────────────────────────────────────────────────────────
+function ProgressBar({ paid, total, color = P.gold }) {
+  const pct = Math.round((paid / total) * 100);
+  return (
+    <div style={{ width: "100%", background: "rgba(255,255,255,0.08)", borderRadius: 99, height: 7, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, background: `linear-gradient(90deg,${color},${color}bb)`, height: "100%", borderRadius: 99, transition: "width 0.4s" }} />
+    </div>
+  );
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -187,29 +238,28 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
-      <div style={{ ...card, width: 360, padding: "40px 36px" }}>
+    <div style={{ minHeight: "100vh", background: "#08080f", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans','Segoe UI',sans-serif", padding: 20 }}>
+      <div style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${P.border}`, borderRadius: 18, padding: "40px 32px", width: "100%", maxWidth: 380 }}>
         <div style={{ textAlign: "center", marginBottom: 32 }}>
-          <div style={{ fontSize: 28, fontWeight: 800, background: `linear-gradient(90deg,${P.gold},#f0d080)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>
-            ◈ FinançasPro
-          </div>
-          <div style={{ fontSize: 13, color: "#555" }}>Acesse sua conta</div>
+          <div style={{ fontSize: 30, fontWeight: 900, background: `linear-gradient(90deg,${P.gold},#fde68a)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>◈ FinançasPro</div>
+          <div style={{ fontSize: 14, color: P.sub, fontWeight: 500 }}>Acesse sua conta</div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={fGrp}>
-            <label style={fLbl}>E-mail</label>
-            <input style={inp} type="email" placeholder="seu@email.com" value={email}
-              onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleLogin()} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, color: P.sub, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 6 }}>E-mail</label>
+            <input style={{ background: "rgba(255,255,255,0.07)", border: `1px solid ${P.border}`, borderRadius: 10, padding: "12px 14px", color: P.text, fontSize: 15, width: "100%", outline: "none", boxSizing: "border-box", fontWeight: 500 }}
+              type="email" placeholder="seu@email.com" value={email}
+              onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
           </div>
-          <div style={fGrp}>
-            <label style={fLbl}>Senha</label>
-            <input style={inp} type="password" placeholder="••••••••" value={password}
-              onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleLogin()} />
+          <div>
+            <label style={{ fontSize: 12, color: P.sub, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 6 }}>Senha</label>
+            <input style={{ background: "rgba(255,255,255,0.07)", border: `1px solid ${P.border}`, borderRadius: 10, padding: "12px 14px", color: P.text, fontSize: 15, width: "100%", outline: "none", boxSizing: "border-box", fontWeight: 500 }}
+              type="password" placeholder="••••••••" value={password}
+              onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && handleLogin()} />
           </div>
-          {error && <div style={{ fontSize: 12, color: P.expense, padding: "8px 12px", background: "rgba(248,113,113,0.08)", borderRadius: 8 }}>{error}</div>}
-          <button style={{ ...btn(), width: "100%", padding: "12px", fontSize: 14, marginTop: 4 }} onClick={handleLogin} disabled={loading}>
+          {error && <div style={{ fontSize: 13, color: P.expense, padding: "10px 14px", background: "rgba(252,165,165,0.1)", borderRadius: 10, fontWeight: 600 }}>{error}</div>}
+          <button style={{ background: `linear-gradient(135deg,${P.gold},#f59e0b)`, border: "none", borderRadius: 10, padding: "14px", color: "#0a0a0f", fontWeight: 800, fontSize: 15, cursor: "pointer", marginTop: 4 }}
+            onClick={handleLogin} disabled={loading}>
             {loading ? "Entrando..." : "Entrar"}
           </button>
         </div>
@@ -218,25 +268,18 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+// ── Main export ───────────────────────────────────────────────────────────────
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session); setLoading(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => setSession(session));
+    supabase.auth.getSession().then(({ data: { session } }) => { setSession(session); setLoading(false); });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => subscription.unsubscribe();
   }, []);
 
-  if (loading) return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ color: P.gold, fontSize: 14 }}>Carregando...</div>
-    </div>
-  );
-
+  if (loading) return <div style={{ minHeight: "100vh", background: "#08080f", display: "flex", alignItems: "center", justifyContent: "center", color: P.gold, fontSize: 15, fontFamily: "'DM Sans',sans-serif", fontWeight: 700 }}>Carregando...</div>;
   if (!session) return <LoginScreen />;
   return <Dashboard session={session} />;
 }
@@ -244,20 +287,21 @@ export default function App() {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 function Dashboard({ session }) {
   const userId = session.user.id;
+  const width  = useWidth();
+  const mob    = width < 768;
 
   const [txs,  setTxs]  = useState([]);
   const [recs, setRecs] = useState([]);
   const [invs, setInvs] = useState([]);
   const [dbLoading, setDbLoading] = useState(true);
-  const [seeding, setSeeding] = useState(false);
-  const [tab, setTab] = useState("dashboard");
-  const [notif, setNotif] = useState(null);
-  const [filterYM, setFilterYM] = useState("all");
-  const [expandedCF, setExpandedCF] = useState({});
+  const [seeding,   setSeeding]   = useState(false);
+  const [tab,       setTab]       = useState("dashboard");
+  const [notif,     setNotif]     = useState(null);
+  const [filterYM,  setFilterYM]  = useState("all");
+  const [expandedCF,setExpandedCF]= useState({});
 
-  const notify = (msg, ok = true) => { setNotif({ msg, ok }); setTimeout(() => setNotif(null), 2800); };
+  const notify = (msg, ok = true) => { setNotif({ msg, ok }); setTimeout(() => setNotif(null), 3000); };
 
-  // ── Load from Supabase ──────────────────────────────────────────────────
   const loadAll = useCallback(async () => {
     setDbLoading(true);
     const [{ data: t }, { data: r }, { data: i }] = await Promise.all([
@@ -271,35 +315,32 @@ function Dashboard({ session }) {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  // ── Seed initial data ───────────────────────────────────────────────────
   const seedData = async () => {
     setSeeding(true);
     const rows = buildSeedRows(userId);
     const CHUNK = 200;
-    for (let i = 0; i < rows.length; i += CHUNK) {
+    for (let i = 0; i < rows.length; i += CHUNK)
       await supabase.from("transactions").insert(rows.slice(i, i + CHUNK));
-    }
-    await loadAll();
-    setSeeding(false);
-    notify("Dados de 2026 carregados com sucesso ✓");
+    await loadAll(); setSeeding(false);
+    notify("Dados de 2026 carregados ✓");
   };
 
-  // ── Form defaults ───────────────────────────────────────────────────────
-  const E0 = { type: "expense", cat: "Moradia", amount: "", ym: TODAY_YM, note: "", parcelas: "1" };
-  const R0 = { type: "expense", cat: "Moradia", amount: "", startYM: TODAY_YM, endYM: addM(TODAY_YM, 11), note: "" };
-  const I0 = { type: "Renda Fixa", name: "", amount: "", ym: TODAY_YM, returnRate: "" };
+  // ── Forms ──────────────────────────────────────────────────────────────
+  const E0 = { type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"1" };
+  const R0 = { type:"expense", cat:"Moradia", amount:"", startYM:TODAY_YM, endYM:addM(TODAY_YM,11), note:"" };
+  const I0 = { type:"Renda Fixa", name:"", amount:"", ym:TODAY_YM, returnRate:"" };
   const [txF, setTxF] = useState(E0);
-  const [recF, setRecF] = useState(R0);
-  const [invF, setInvF] = useState(I0);
+  const [recF,setRecF]= useState(R0);
+  const [invF,setInvF]= useState(I0);
 
-  // ── Computed ────────────────────────────────────────────────────────────
+  // ── Computed ───────────────────────────────────────────────────────────
   const allE = useMemo(() => {
     const es = [...txs];
     recs.forEach(r => {
       let ym = r.start_ym;
       while (ym <= r.end_ym) {
-        const exists = txs.some(t => t.recur_id === r.id && t.ym === ym);
-        if (!exists) es.push({ id: `rec_${r.id}_${ym}`, type: r.type, cat: r.cat, amount: r.amount, ym, note: r.note, confirmed: ym < TODAY_YM, isRec: true, recurId: r.id });
+        if (!txs.some(t => t.recur_id === r.id && t.ym === ym))
+          es.push({ id:`rec_${r.id}_${ym}`, type:r.type, cat:r.cat, amount:r.amount, ym, note:r.note, confirmed:ym < TODAY_YM, isRec:true, recurId:r.id });
         ym = addM(ym, 1);
       }
     });
@@ -309,526 +350,616 @@ function Dashboard({ session }) {
   const allYMs = useMemo(() => [...new Set(allE.map(e => e.ym))].sort(), [allE]);
   const filtered = useMemo(() => filterYM === "all" ? allE : allE.filter(e => e.ym === filterYM), [allE, filterYM]);
 
-  const totInc   = filtered.filter(e => e.type === "income").reduce((s, e) => s + +e.amount, 0);
-  const totExp   = filtered.filter(e => e.type === "expense").reduce((s, e) => s + +e.amount, 0);
-  const surplus  = totInc - totExp;
-  const totInv   = invs.reduce((s, i) => s + +i.amount, 0);
+  const totInc  = filtered.filter(e => e.type === "income").reduce((s, e) => s + +e.amount, 0);
+  const totExp  = filtered.filter(e => e.type === "expense").reduce((s, e) => s + +e.amount, 0);
+  const surplus = totInc - totExp;
+  const totInv  = invs.reduce((s, i) => s + +i.amount, 0);
 
   const monthSummary = useMemo(() => {
     const map = {};
     allE.forEach(e => {
-      if (!map[e.ym]) map[e.ym] = { ym: e.ym, In: 0, Out: 0 };
-      if (e.type === "income") map[e.ym].In += +e.amount;
-      else map[e.ym].Out += +e.amount;
+      if (!map[e.ym]) map[e.ym] = { ym:e.ym, In:0, Out:0 };
+      if (e.type === "income") map[e.ym].In  += +e.amount;
+      else                     map[e.ym].Out += +e.amount;
     });
-    return Object.values(map).sort((a, b) => a.ym.localeCompare(b.ym))
-      .map(d => ({ ...d, label: lbl(d.ym), Saldo: Math.max(0, d.In - d.Out) }));
+    return Object.values(map).sort((a,b)=>a.ym.localeCompare(b.ym))
+      .map(d => ({ ...d, label:lbl(d.ym), Saldo:Math.max(0, d.In - d.Out) }));
   }, [allE]);
 
   const expCats = useMemo(() => {
     const map = {};
-    filtered.filter(e => e.type === "expense").forEach(e => { map[e.cat] = (map[e.cat] || 0) + +e.amount; });
-    return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    filtered.filter(e => e.type === "expense").forEach(e => { map[e.cat] = (map[e.cat]||0) + +e.amount; });
+    return Object.entries(map).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
   }, [filtered]);
 
-  const investProj = useMemo(() =>
-    Array.from({ length: 12 }, (_, m) => ({
-      mes: MO[(new Date().getMonth() + m) % 12],
-      Patrimônio: Math.round(invs.reduce((s, i) => s + +i.amount * Math.pow(1 + +i.return_rate / 100 / 12, m + 1), 0)),
-    }))
-  , [invs]);
-
   const cashFlow = useMemo(() =>
-    Array.from({ length: 6 }, (_, i) => addM(TODAY_YM, i)).map(ym => {
+    Array.from({length:6},(_,i)=>addM(TODAY_YM,i)).map(ym => {
       const entries = allE.filter(e => e.ym === ym);
-      const income  = entries.filter(e => e.type === "income").reduce((s, e) => s + +e.amount, 0);
-      const expense = entries.filter(e => e.type === "expense").reduce((s, e) => s + +e.amount, 0);
+      const income  = entries.filter(e=>e.type==="income").reduce((s,e)=>s + +e.amount,0);
+      const expense = entries.filter(e=>e.type==="expense").reduce((s,e)=>s + +e.amount,0);
       const catMap  = {};
-      entries.filter(e => e.type === "expense").forEach(e => { catMap[e.cat] = (catMap[e.cat] || 0) + +e.amount; });
-      const cats = Object.entries(catMap).map(([c, v]) => ({ cat: c, v })).sort((a, b) => b.v - a.v);
-      return { ym, label: lbl(ym), income, expense, saldo: income - expense, entries, cats };
+      entries.filter(e=>e.type==="expense").forEach(e=>{catMap[e.cat]=(catMap[e.cat]||0)+ +e.amount;});
+      return { ym, label:lbl(ym), income, expense, saldo:income-expense, entries, cats:Object.entries(catMap).map(([c,v])=>({cat:c,v})).sort((a,b)=>b.v-a.v) };
     })
   , [allE]);
 
-  // ── CRUD ────────────────────────────────────────────────────────────────
+  const investProj = useMemo(()=>
+    Array.from({length:12},(_,m)=>({
+      mes:MO[(new Date().getMonth()+m)%12],
+      Patrimônio:Math.round(invs.reduce((s,i)=>s + +i.amount*Math.pow(1+ +i.return_rate/100/12,m+1),0)),
+    }))
+  ,[invs]);
+
+  const installSummary = useMemo(() => buildInstallmentSummary(), []);
+
+  // ── CRUD ───────────────────────────────────────────────────────────────
   const addTx = async () => {
-    const amt = +txF.amount, parc = Math.max(1, parseInt(txF.parcelas) || 1);
-    if (!amt || !txF.ym) return notify("Preencha valor e mês.", false);
-    const parcAmt = +(amt / parc).toFixed(2);
-    const gid = parc > 1 ? `G${Date.now()}` : null;
-    const rows = Array.from({ length: parc }, (_, i) => ({
-      user_id: userId, type: txF.type, cat: txF.cat, amount: parcAmt,
-      ym: addM(txF.ym, i), note: parc > 1 ? `${txF.note} ${i + 1}/${parc}` : txF.note,
-      confirmed: addM(txF.ym, i) <= TODAY_YM,
-      i_group: gid, i_num: parc > 1 ? i + 1 : null, i_total: parc > 1 ? parc : null,
+    const amt = +txF.amount, parc = Math.max(1, parseInt(txF.parcelas)||1);
+    if (!amt||!txF.ym) return notify("Preencha valor e mês.",false);
+    const parcAmt = +(amt/parc).toFixed(2);
+    const gid = parc>1?`G${Date.now()}`:null;
+    const rows = Array.from({length:parc},(_,i)=>({
+      user_id:userId, type:txF.type, cat:txF.cat, amount:parcAmt,
+      ym:addM(txF.ym,i), note:parc>1?`${txF.note} ${i+1}/${parc}`:txF.note,
+      confirmed:addM(txF.ym,i)<=TODAY_YM,
+      i_group:gid, i_num:parc>1?i+1:null, i_total:parc>1?parc:null,
     }));
     await supabase.from("transactions").insert(rows);
-    await loadAll();
-    setTxF(E0);
-    notify(parc > 1 ? `${parc} parcelas lançadas ✓` : "Lançamento adicionado ✓");
-  };
-
-  const delTx = async (id) => {
-    await supabase.from("transactions").delete().eq("id", id);
-    setTxs(p => p.filter(t => t.id !== id));
+    await loadAll(); setTxF(E0);
+    notify(parc>1?`${parc} parcelas lançadas ✓`:"Lançamento adicionado ✓");
   };
 
   const addRec = async () => {
-    if (!+recF.amount || !recF.note) return notify("Preencha todos os campos.", false);
-    await supabase.from("recurrents").insert({ user_id: userId, type: recF.type, cat: recF.cat, amount: +recF.amount, start_ym: recF.startYM, end_ym: recF.endYM, note: recF.note });
+    if (!+recF.amount||!recF.note) return notify("Preencha todos os campos.",false);
+    await supabase.from("recurrents").insert({ user_id:userId, type:recF.type, cat:recF.cat, amount:+recF.amount, start_ym:recF.startYM, end_ym:recF.endYM, note:recF.note });
     await loadAll(); setRecF(R0); notify("Recorrente criado ✓");
   };
 
-  const delRec = async (id) => {
-    await supabase.from("recurrents").delete().eq("id", id);
-    setRecs(p => p.filter(r => r.id !== id));
-  };
-
   const addInv = async () => {
-    if (!invF.name || !invF.amount || !invF.returnRate) return notify("Preencha todos os campos.", false);
-    await supabase.from("investments").insert({ user_id: userId, type: invF.type, name: invF.name, amount: +invF.amount, ym: invF.ym, return_rate: +invF.returnRate });
+    if (!invF.name||!invF.amount||!invF.returnRate) return notify("Preencha todos os campos.",false);
+    await supabase.from("investments").insert({ user_id:userId, type:invF.type, name:invF.name, amount:+invF.amount, ym:invF.ym, return_rate:+invF.returnRate });
     await loadAll(); setInvF(I0); notify("Investimento registrado ✓");
   };
 
-  const delInv = async (id) => {
-    await supabase.from("investments").delete().eq("id", id);
-    setInvs(p => p.filter(i => i.id !== id));
-  };
-
+  const delTx  = async id => { await supabase.from("transactions").delete().eq("id",id); setTxs(p=>p.filter(t=>t.id!==id)); };
+  const delRec = async id => { await supabase.from("recurrents").delete().eq("id",id); setRecs(p=>p.filter(r=>r.id!==id)); };
+  const delInv = async id => { await supabase.from("investments").delete().eq("id",id); setInvs(p=>p.filter(i=>i.id!==id)); };
   const logout = async () => { await supabase.auth.signOut(); };
 
+  // ── Responsive style helpers ───────────────────────────────────────────
+  const grid2 = { display:"grid", gridTemplateColumns: mob?"1fr":"1fr 1fr", gap:14 };
+  const grid4 = { display:"grid", gridTemplateColumns: mob?"1fr 1fr":"repeat(4,1fr)", gap:12, marginBottom:18 };
+
+  const S = {
+    app:    { minHeight:"100vh", background:"#08080f", fontFamily:"'DM Sans','Segoe UI',sans-serif", color:P.text },
+    card:   { background:"rgba(255,255,255,0.05)", border:`1px solid ${P.border}`, borderRadius:14, padding: mob?"14px 16px":"18px 22px" },
+    inp:    { background:"rgba(255,255,255,0.08)", border:`1px solid ${P.border}`, borderRadius:10, padding:"10px 13px", color:P.text, fontSize:14, width:"100%", outline:"none", boxSizing:"border-box", fontWeight:500 },
+    sel:    { background:"rgba(12,12,20,0.95)", border:`1px solid ${P.border}`, borderRadius:10, padding:"10px 13px", color:P.text, fontSize:14, width:"100%", outline:"none", cursor:"pointer", boxSizing:"border-box", fontWeight:500 },
+    th:     { textAlign:"left", color:P.muted, fontWeight:700, fontSize:11, textTransform:"uppercase", letterSpacing:1, padding:"8px 10px", borderBottom:`1px solid ${P.border}` },
+    td:     { padding:"9px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)", verticalAlign:"middle", fontSize: mob?12:13 },
+    secT:   { fontSize:12, fontWeight:800, textTransform:"uppercase", letterSpacing:2, color:P.gold, marginBottom:14 },
+    fGrp:   { display:"flex", flexDirection:"column", gap:5, flex:1, minWidth: mob?140:90 },
+    fLbl:   { fontSize:11, color:P.sub, letterSpacing:1, textTransform:"uppercase", fontWeight:700 },
+    row:    { display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap", marginBottom:10 },
+    btn:    (c=P.gold)=>({ background:`linear-gradient(135deg,${c},${c}cc)`, border:"none", borderRadius:10, padding:"10px 18px", color:"#08080f", fontWeight:800, fontSize:13, cursor:"pointer", whiteSpace:"nowrap" }),
+    btnD:   { background:"transparent", border:`1px solid rgba(${hexRgb(P.expense)},0.35)`, borderRadius:8, padding:"5px 10px", color:P.expense, fontSize:12, cursor:"pointer", fontWeight:600 },
+    bdg:    (c)=>({ display:"inline-block", padding:"3px 10px", borderRadius:20, fontSize:12, fontWeight:700, background:`rgba(${hexRgb(c)},0.18)`, color:c, border:`1px solid rgba(${hexRgb(c)},0.3)` }),
+    statC:  (c)=>({ background:`linear-gradient(135deg,rgba(${hexRgb(c)},0.1),rgba(0,0,0,0.4))`, border:`1px solid rgba(${hexRgb(c)},0.3)`, borderRadius:14, padding: mob?"14px 16px":"16px 20px" }),
+  };
+
   const TABS = [
-    { id: "dashboard", label: "Dashboard" },
-    { id: "lancamentos", label: "Lançamentos" },
-    { id: "recorrentes", label: "Recorrentes" },
-    { id: "fluxo", label: "Fluxo de Caixa" },
-    { id: "investimentos", label: "Investimentos" },
-    { id: "graficos", label: "Gráficos" },
+    {id:"dashboard",   label: mob?"📊":"Dashboard"},
+    {id:"lancamentos", label: mob?"📝":"Lançamentos"},
+    {id:"parcelas",    label: mob?"💳":"Parcelas"},
+    {id:"fluxo",       label: mob?"📅":"Fluxo"},
+    {id:"investimentos",label:mob?"📈":"Investimentos"},
+    {id:"graficos",    label: mob?"📉":"Gráficos"},
   ];
 
-  if (dbLoading) return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans','Segoe UI',sans-serif" }}>
-      <div style={{ color: P.gold, fontSize: 14 }}>Carregando seus dados...</div>
-    </div>
-  );
+  if (dbLoading) return <div style={{ minHeight:"100vh", background:"#08080f", display:"flex", alignItems:"center", justifyContent:"center", color:P.gold, fontSize:15, fontFamily:"'DM Sans',sans-serif", fontWeight:700 }}>Carregando seus dados...</div>;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "'DM Sans','Segoe UI',sans-serif", color: "#e5e0d5" }}>
+    <div style={S.app}>
 
-      {notif && <div style={{ position: "fixed", top: 66, right: 22, zIndex: 999, padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, background: notif.ok ? "rgba(74,222,128,0.1)" : "rgba(248,113,113,0.1)", border: `1px solid ${notif.ok ? "#4ade80" : "#f87171"}`, color: notif.ok ? "#4ade80" : "#f87171" }}>{notif.msg}</div>}
+      {notif && (
+        <div style={{ position:"fixed", top:70, right: mob?12:22, left: mob?12:"auto", zIndex:999, padding:"12px 18px", borderRadius:12, fontSize:14, fontWeight:700,
+          background:notif.ok?"rgba(110,231,160,0.12)":"rgba(252,165,165,0.12)",
+          border:`1px solid ${notif.ok?P.income:P.expense}`, color:notif.ok?P.income:P.expense,
+          boxShadow:"0 8px 32px rgba(0,0,0,0.5)", textAlign:"center" }}>
+          {notif.msg}
+        </div>
+      )}
 
-      <header style={{ background: "linear-gradient(135deg,#0d0d15,#12121e)", borderBottom: "1px solid rgba(212,168,67,0.2)", padding: "0 24px", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56, position: "sticky", top: 0, zIndex: 100 }}>
-        <span style={{ fontSize: 17, fontWeight: 800, background: `linear-gradient(90deg,${P.gold},#f0d080)`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>◈ FinançasPro</span>
-        <nav style={{ display: "flex", gap: 2 }}>
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, background: tab === t.id ? "rgba(212,168,67,0.15)" : "transparent", color: tab === t.id ? P.gold : "#666", borderBottom: tab === t.id ? `2px solid ${P.gold}` : "2px solid transparent", transition: "all 0.2s" }}>{t.label}</button>
+      {/* Header */}
+      <header style={{ background:"linear-gradient(135deg,#0d0d18,#12121f)", borderBottom:`1px solid rgba(${hexRgb(P.gold)},0.25)`,
+        padding: mob?"0 14px":"0 24px", display:"flex", alignItems:"center", justifyContent:"space-between",
+        height:56, position:"sticky", top:0, zIndex:100 }}>
+        <span style={{ fontSize: mob?15:18, fontWeight:900, background:`linear-gradient(90deg,${P.gold},#fde68a)`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", whiteSpace:"nowrap" }}>
+          ◈ {mob?"":"FinançasPro"}
+        </span>
+        <nav style={{ display:"flex", gap:2, overflowX:"auto", flex:1, margin:"0 10px", justifyContent:"center" }}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              padding: mob?"6px 10px":"6px 13px", borderRadius:8, border:"none", cursor:"pointer",
+              fontSize: mob?13:12, fontWeight:700, whiteSpace:"nowrap",
+              background:tab===t.id?"rgba(251,191,36,0.15)":"transparent",
+              color:tab===t.id?P.gold:P.muted,
+              borderBottom:tab===t.id?`2px solid ${P.gold}`:"2px solid transparent",
+              transition:"all 0.2s" }}>
+              {t.label}
+            </button>
           ))}
         </nav>
-        <button onClick={logout} style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, padding: "5px 12px", color: "#555", fontSize: 12, cursor: "pointer" }}>Sair</button>
+        <button onClick={logout} style={{ background:"transparent", border:`1px solid ${P.border}`, borderRadius:8, padding:"5px 10px", color:P.muted, fontSize:12, cursor:"pointer", fontWeight:600, whiteSpace:"nowrap" }}>Sair</button>
       </header>
 
-      <main style={{ padding: "20px 24px", maxWidth: 1500, margin: "0 auto" }}>
+      <main style={{ padding: mob?"14px":"20px 24px", maxWidth:1500, margin:"0 auto" }}>
 
         {/* Seed banner */}
         {txs.length === 0 && !seeding && (
-          <div style={{ ...card, marginBottom: 16, background: "rgba(212,168,67,0.06)", border: "1px solid rgba(212,168,67,0.2)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ ...S.card, marginBottom:16, background:"rgba(251,191,36,0.07)", border:`1px solid rgba(${hexRgb(P.gold)},0.25)`, display:"flex", flexDirection: mob?"column":"row", alignItems: mob?"flex-start":"center", justifyContent:"space-between", gap:12 }}>
             <div>
-              <div style={{ fontWeight: 700, color: P.gold, marginBottom: 4 }}>Banco de dados vazio</div>
-              <div style={{ fontSize: 12, color: "#666" }}>Clique para carregar todos os seus dados de 2026 no banco.</div>
+              <div style={{ fontWeight:800, color:P.gold, marginBottom:4, fontSize:15 }}>Banco de dados vazio</div>
+              <div style={{ fontSize:13, color:P.sub }}>Clique para carregar seus dados de 2026.</div>
             </div>
-            <button style={btn()} onClick={seedData}>Carregar dados de 2026</button>
+            <button style={S.btn()} onClick={seedData}>Carregar dados de 2026</button>
           </div>
         )}
-        {seeding && (
-          <div style={{ ...card, marginBottom: 16, textAlign: "center", color: P.gold, fontSize: 13 }}>
-            ⏳ Carregando dados no banco... aguarde.
-          </div>
-        )}
+        {seeding && <div style={{ ...S.card, marginBottom:16, textAlign:"center", color:P.gold, fontSize:14, fontWeight:700 }}>⏳ Carregando dados... aguarde.</div>}
 
-        {/* ═══ DASHBOARD ══════════════════════════════════════════════════ */}
-        {tab === "dashboard" && <>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-            <span style={{ fontSize: 12, color: "#555" }}>Período:</span>
-            <select style={{ ...sel, width: 150 }} value={filterYM} onChange={e => setFilterYM(e.target.value)}>
+        {/* ══ DASHBOARD ══════════════════════════════════════════════════ */}
+        {tab==="dashboard" && <>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16, flexWrap:"wrap" }}>
+            <span style={{ fontSize:13, color:P.sub, fontWeight:600 }}>Período:</span>
+            <select style={{ ...S.sel, width:160 }} value={filterYM} onChange={e=>setFilterYM(e.target.value)}>
               <option value="all">Ano todo (2026)</option>
-              {allYMs.map(m => <option key={m} value={m}>{lbl(m)}</option>)}
+              {allYMs.map(m=><option key={m} value={m}>{lbl(m)}</option>)}
             </select>
-            <span style={{ fontSize: 11, color: "#444" }}>✅ Confirmado &nbsp;|&nbsp; 🔵 Previsto</span>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 18 }}>
+          <div style={grid4}>
             {[
-              { label: "Receitas", value: totInc, color: P.income, sub: "no período" },
-              { label: "Despesas", value: totExp, color: P.expense, sub: "no período" },
-              { label: "Excedente", value: surplus, color: surplus >= 0 ? P.surplus : P.expense, sub: "para investir" },
-              { label: "Patrimônio Inv.", value: totInv, color: P.invest, sub: `${invs.length} aplicações` },
-            ].map(c => (
-              <div key={c.label} style={statC(c.color)}>
-                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 2, color: "#555", marginBottom: 4 }}>{c.label}</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: c.color, lineHeight: 1 }}>{fmt(c.value)}</div>
-                <div style={{ fontSize: 11, color: "#555", marginTop: 3 }}>{c.sub}</div>
+              {label:"Receitas",  value:totInc,  color:P.income,  sub:"no período"},
+              {label:"Despesas",  value:totExp,  color:P.expense, sub:"no período"},
+              {label:"Excedente", value:surplus, color:surplus>=0?P.surplus:P.expense, sub:"para investir"},
+              {label:"Invest.",   value:totInv,  color:P.invest,  sub:`${invs.length} aplicações`},
+            ].map(c=>(
+              <div key={c.label} style={S.statC(c.color)}>
+                <div style={{ fontSize:11, textTransform:"uppercase", letterSpacing:2, color:P.muted, marginBottom:5, fontWeight:700 }}>{c.label}</div>
+                <div style={{ fontSize: mob?18:22, fontWeight:900, color:c.color, lineHeight:1 }}>{fmt(c.value)}</div>
+                <div style={{ fontSize:12, color:P.sub, marginTop:4, fontWeight:500 }}>{c.sub}</div>
               </div>
             ))}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <div style={card}>
-              <div style={secT}>Receitas × Despesas — 2026</div>
-              <ResponsiveContainer width="100%" height={240}>
+          <div style={grid2}>
+            <div style={S.card}>
+              <div style={S.secT}>Receitas × Despesas 2026</div>
+              <ResponsiveContainer width="100%" height={mob?200:240}>
                 <BarChart data={monthSummary} barGap={2}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} />
-                  <Tooltip content={<CTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: "#777" }} />
-                  <Bar dataKey="In" name="Receitas" fill={P.income} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="Out" name="Despesas" fill={P.expense} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="Saldo" name="Excedente" fill={P.surplus} radius={[3, 3, 0, 0]} />
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                  <Bar dataKey="In" name="Receitas" fill={P.income} radius={[4,4,0,0]}/>
+                  <Bar dataKey="Out" name="Despesas" fill={P.expense} radius={[4,4,0,0]}/>
+                  <Bar dataKey="Saldo" name="Excedente" fill={P.surplus} radius={[4,4,0,0]}/>
                 </BarChart>
               </ResponsiveContainer>
             </div>
-
-            <div style={card}>
-              <div style={secT}>Despesas por Categoria</div>
-              {expCats.length > 0 ? (
-                <ResponsiveContainer width="100%" height={240}>
+            <div style={S.card}>
+              <div style={S.secT}>Despesas por Categoria</div>
+              {expCats.length>0?(
+                <ResponsiveContainer width="100%" height={mob?200:240}>
                   <PieChart>
-                    <Pie data={expCats} cx="50%" cy="50%" innerRadius={55} outerRadius={88} dataKey="value" nameKey="name" paddingAngle={2}
-                      label={({ name, percent }) => percent > 0.04 ? `${name} ${(percent * 100).toFixed(0)}%` : ""} labelLine={false} style={{ fontSize: 9, fill: "#999" }}>
-                      {expCats.map((_, i) => <Cell key={i} fill={PIE_C[i % PIE_C.length]} />)}
+                    <Pie data={expCats} cx="50%" cy="50%" innerRadius={mob?45:55} outerRadius={mob?80:90}
+                      dataKey="value" nameKey="name" paddingAngle={2}
+                      label={({name,percent})=>percent>0.05?`${(percent*100).toFixed(0)}%`:""}
+                      labelLine={false} style={{fontSize:11,fill:P.sub,fontWeight:700}}>
+                      {expCats.map((_,i)=><Cell key={i} fill={PIE_C[i%PIE_C.length]}/>)}
                     </Pie>
-                    <Tooltip formatter={v => fmt(v)} />
+                    <Tooltip formatter={v=>fmt(v)}/>
+                    <Legend wrapperStyle={{fontSize:11,color:P.sub,fontWeight:600}}/>
                   </PieChart>
                 </ResponsiveContainer>
-              ) : <div style={{ textAlign: "center", color: "#444", paddingTop: 80, fontSize: 13 }}>Sem despesas</div>}
+              ):<div style={{textAlign:"center",color:P.muted,paddingTop:80,fontSize:14}}>Sem despesas</div>}
             </div>
           </div>
 
-          <div style={{ ...card, marginTop: 14 }}>
-            <div style={secT}>Breakdown por Categoria</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 8 }}>
-              {expCats.map((c, i) => (
-                <div key={c.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: `1px solid rgba(${hexRgb(PIE_C[i % PIE_C.length])},0.2)` }}>
-                  <span style={{ fontSize: 12, color: "#999" }}>{c.name}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: PIE_C[i % PIE_C.length] }}>{fmt(c.value)}</span>
+          {/* Category cards */}
+          <div style={{ ...S.card, marginTop:14 }}>
+            <div style={S.secT}>Breakdown por Categoria</div>
+            <div style={{ display:"grid", gridTemplateColumns: mob?"1fr 1fr":"repeat(auto-fill,minmax(190px,1fr))", gap:8 }}>
+              {expCats.map((c,i)=>(
+                <div key={c.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", borderRadius:10, background:"rgba(255,255,255,0.04)", border:`1px solid rgba(${hexRgb(PIE_C[i%PIE_C.length])},0.25)` }}>
+                  <span style={{ fontSize:12, color:P.sub, fontWeight:600 }}>{c.name}</span>
+                  <span style={{ fontSize:13, fontWeight:800, color:PIE_C[i%PIE_C.length] }}>{fmt(c.value)}</span>
                 </div>
               ))}
             </div>
           </div>
         </>}
 
-        {/* ═══ LANÇAMENTOS ════════════════════════════════════════════════ */}
-        {tab === "lancamentos" && <>
-          <div style={card}>
-            <div style={secT}>Novo Lançamento</div>
-            <div style={row}>
-              <div style={fGrp}>
-                <label style={fLbl}>Tipo</label>
-                <select style={sel} value={txF.type} onChange={e => setTxF(f => ({ ...f, type: e.target.value, cat: e.target.value === "income" ? CATS_INC[0] : CATS_EXP[0] }))}>
+        {/* ══ LANÇAMENTOS ════════════════════════════════════════════════ */}
+        {tab==="lancamentos" && <>
+          <div style={S.card}>
+            <div style={S.secT}>Novo Lançamento</div>
+            <div style={S.row}>
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Tipo</label>
+                <select style={S.sel} value={txF.type} onChange={e=>setTxF(f=>({...f,type:e.target.value,cat:e.target.value==="income"?CATS_INC[0]:CATS_EXP[0]}))}>
                   <option value="income">Receita</option><option value="expense">Despesa</option>
                 </select>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Categoria</label>
-                <select style={sel} value={txF.cat} onChange={e => setTxF(f => ({ ...f, cat: e.target.value }))}>
-                  {(txF.type === "income" ? CATS_INC : CATS_EXP).map(c => <option key={c}>{c}</option>)}
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Categoria</label>
+                <select style={S.sel} value={txF.cat} onChange={e=>setTxF(f=>({...f,cat:e.target.value}))}>
+                  {(txF.type==="income"?CATS_INC:CATS_EXP).map(c=><option key={c}>{c}</option>)}
                 </select>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Valor Total (R$)</label>
-                <input style={inp} type="number" placeholder="0,00" value={txF.amount} onChange={e => setTxF(f => ({ ...f, amount: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Valor Total</label>
+                <input style={S.inp} type="number" placeholder="0,00" value={txF.amount} onChange={e=>setTxF(f=>({...f,amount:e.target.value}))}/>
               </div>
-              <div style={{ ...fGrp, maxWidth: 100 }}>
-                <label style={fLbl}>Parcelas</label>
-                <input style={inp} type="number" min="1" max="60" value={txF.parcelas} onChange={e => setTxF(f => ({ ...f, parcelas: e.target.value }))} />
+              <div style={{...S.fGrp,maxWidth:100}}>
+                <label style={S.fLbl}>Parcelas</label>
+                <input style={S.inp} type="number" min="1" max="60" value={txF.parcelas} onChange={e=>setTxF(f=>({...f,parcelas:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>1ª Parcela em</label>
-                <input style={inp} type="month" value={txF.ym} onChange={e => setTxF(f => ({ ...f, ym: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>1ª Parcela em</label>
+                <input style={S.inp} type="month" value={txF.ym} onChange={e=>setTxF(f=>({...f,ym:e.target.value}))}/>
               </div>
-              <div style={{ ...fGrp, flex: 2 }}>
-                <label style={fLbl}>Descrição</label>
-                <input style={inp} placeholder="Ex: Sofá novo, Bônus..." value={txF.note} onChange={e => setTxF(f => ({ ...f, note: e.target.value }))} />
+              <div style={{...S.fGrp,flex:2}}>
+                <label style={S.fLbl}>Descrição</label>
+                <input style={S.inp} placeholder="Ex: TV nova, Bônus..." value={txF.note} onChange={e=>setTxF(f=>({...f,note:e.target.value}))}/>
               </div>
-              <button style={btn()} onClick={addTx}>{+txF.parcelas > 1 ? `+ ${txF.parcelas}x` : "+ Adicionar"}</button>
+              <button style={S.btn()} onClick={addTx}>{+txF.parcelas>1?`+ ${txF.parcelas}x`:"+ Adicionar"}</button>
             </div>
-            {+txF.parcelas > 1 && +txF.amount > 0 && (
-              <div style={{ fontSize: 12, color: "#60a5fa", padding: "7px 12px", background: "rgba(96,165,250,0.07)", borderRadius: 8 }}>
-                💳 {txF.parcelas}x de <strong>{fmt(+txF.amount / +txF.parcelas)}</strong> a partir de <strong>{lbl(txF.ym)}</strong>
+            {+txF.parcelas>1&&+txF.amount>0&&(
+              <div style={{fontSize:13,color:P.surplus,padding:"8px 14px",background:"rgba(147,197,253,0.08)",borderRadius:10,fontWeight:600}}>
+                💳 {txF.parcelas}x de <strong>{fmt(+txF.amount/+txF.parcelas)}</strong> a partir de <strong>{lbl(txF.ym)}</strong>
               </div>
             )}
           </div>
 
-          <div style={{ ...card, marginTop: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={secT}>Lançamentos</div>
-              <select style={{ ...sel, width: 150 }} value={filterYM} onChange={e => setFilterYM(e.target.value)}>
+          <div style={{...S.card,marginTop:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+              <div style={S.secT}>Todos os Lançamentos</div>
+              <select style={{...S.sel,width:160}} value={filterYM} onChange={e=>setFilterYM(e.target.value)}>
                 <option value="all">Todos os meses</option>
-                {allYMs.map(m => <option key={m} value={m}>{lbl(m)}</option>)}
+                {allYMs.map(m=><option key={m} value={m}>{lbl(m)}</option>)}
               </select>
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead><tr>{["Mês","Tipo","Categoria","Descrição","Valor","Status",""].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
-              <tbody>
-                {[...filtered].filter(e => !e.isRec).sort((a, b) => b.ym.localeCompare(a.ym)).map(e => (
-                  <tr key={e.id} style={{ opacity: e.confirmed ? 1 : 0.72 }}>
-                    <td style={{ ...td, color: "#555", fontSize: 11 }}>{lbl(e.ym)}</td>
-                    <td style={td}><span style={bdg(e.type === "income" ? P.income : P.expense)}>{e.type === "income" ? "↑" : "↓"}</span></td>
-                    <td style={{ ...td, color: "#888", fontSize: 11 }}>{e.cat}</td>
-                    <td style={{ ...td, color: "#aaa" }}>{e.note}{e.i_total && <span style={{ fontSize: 10, color: "#60a5fa", marginLeft: 4 }}>[{e.i_num}/{e.i_total}]</span>}</td>
-                    <td style={{ ...td, fontWeight: 700, color: e.type === "income" ? P.income : P.expense }}>{e.type === "income" ? "+" : "-"}{fmt(e.amount)}</td>
-                    <td style={td}>{e.confirmed ? <span style={{ fontSize: 11, color: "#4ade80" }}>✓</span> : <span style={{ fontSize: 11, color: "#60a5fa" }}>◌</span>}</td>
-                    <td style={td}><button style={btnD} onClick={() => delTx(e.id)}>✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ display: "flex", gap: 20, marginTop: 10, padding: "8px 10px 0", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-              <span style={{ fontSize: 12, color: "#666" }}>Receitas: <strong style={{ color: P.income }}>{fmt(totInc)}</strong></span>
-              <span style={{ fontSize: 12, color: "#666" }}>Despesas: <strong style={{ color: P.expense }}>{fmt(totExp)}</strong></span>
-              <span style={{ fontSize: 12, color: "#666" }}>Saldo: <strong style={{ color: surplus >= 0 ? P.surplus : P.expense }}>{fmt(surplus)}</strong></span>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:mob?500:0}}>
+                <thead><tr>{["Mês","Tipo","Categoria","Descrição","Valor","St.",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {[...filtered].filter(e=>!e.isRec).sort((a,b)=>b.ym.localeCompare(a.ym)).map(e=>(
+                    <tr key={e.id} style={{opacity:e.confirmed?1:0.75}}>
+                      <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{lbl(e.ym)}</td>
+                      <td style={S.td}><span style={S.bdg(e.type==="income"?P.income:P.expense)}>{e.type==="income"?"↑":"↓"}</span></td>
+                      <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{e.cat}</td>
+                      <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{fontSize:11,color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
+                      <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
+                      <td style={S.td}>{e.confirmed?<span style={{fontSize:12,color:P.income,fontWeight:700}}>✓</span>:<span style={{fontSize:12,color:P.surplus,fontWeight:700}}>◌</span>}</td>
+                      <td style={S.td}><button style={S.btnD} onClick={()=>delTx(e.id)}>✕</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{display:"flex",gap:20,marginTop:12,padding:"10px 10px 0",borderTop:`1px solid ${P.border}`,flexWrap:"wrap"}}>
+              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Receitas: <strong style={{color:P.income}}>{fmt(totInc)}</strong></span>
+              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Despesas: <strong style={{color:P.expense}}>{fmt(totExp)}</strong></span>
+              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Saldo: <strong style={{color:surplus>=0?P.surplus:P.expense}}>{fmt(surplus)}</strong></span>
             </div>
           </div>
         </>}
 
-        {/* ═══ RECORRENTES ════════════════════════════════════════════════ */}
-        {tab === "recorrentes" && <>
-          <div style={{ ...card, marginBottom: 14 }}>
-            <div style={secT}>Novo Lançamento Fixo / Recorrente</div>
-            <div style={row}>
-              <div style={fGrp}>
-                <label style={fLbl}>Tipo</label>
-                <select style={sel} value={recF.type} onChange={e => setRecF(f => ({ ...f, type: e.target.value, cat: e.target.value === "income" ? CATS_INC[0] : CATS_EXP[0] }))}>
+        {/* ══ PARCELAS & RECORRENTES ══════════════════════════════════════ */}
+        {tab==="parcelas" && <>
+          <div style={{fontSize:13,color:P.sub,marginBottom:16,fontWeight:500,lineHeight:1.6}}>
+            Visão completa de todas as compras parceladas ativas e pagamentos recorrentes — com progresso, valor mensal e data de encerramento.
+          </div>
+
+          {/* Parcelas do plano anual */}
+          <div style={{...S.card,marginBottom:14}}>
+            <div style={S.secT}>💳 Compras Parceladas — Ainda em Andamento</div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              {installSummary.map((item,i)=>{
+                const pct = Math.round((item.paid/item.total)*100);
+                const color = PIE_C[i%PIE_C.length];
+                return(
+                  <div key={item.name} style={{background:"rgba(255,255,255,0.03)",border:`1px solid rgba(${hexRgb(color)},0.2)`,borderRadius:12,padding:"14px 18px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,flexWrap:"wrap",gap:8}}>
+                      <div>
+                        <div style={{fontWeight:800,fontSize:14,color:P.text,marginBottom:3}}>{item.name}</div>
+                        <div style={{fontSize:12,color:P.sub,fontWeight:600}}>{item.cat}</div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:16,fontWeight:900,color:color}}>{fmt(item.monthlyVal)}<span style={{fontSize:11,color:P.muted,fontWeight:600}}>/mês</span></div>
+                        <div style={{fontSize:11,color:P.muted,fontWeight:600}}>Total: {fmt(item.totalValue)}</div>
+                      </div>
+                    </div>
+                    <ProgressBar paid={item.paid} total={item.total} color={color}/>
+                    <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:12,fontWeight:700}}>
+                      <span style={{color:P.income}}>{item.paid}/{item.total} parcelas pagas ({pct}%)</span>
+                      <span style={{color:item.remaining<=2?P.expense:P.muted}}>
+                        {item.remaining} restante{item.remaining!==1?"s":""} · até <strong style={{color:color}}>{lbl(item.lastYM)}</strong>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              {installSummary.length===0&&<div style={{textAlign:"center",color:P.muted,padding:28,fontSize:13}}>Nenhuma parcela ativa no momento.</div>}
+            </div>
+          </div>
+
+          {/* Recorrentes cadastrados pelo usuário */}
+          <div style={{...S.card,marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+              <div style={S.secT}>🔄 Pagamentos Recorrentes Cadastrados</div>
+              <button style={S.btn(P.invest)} onClick={()=>setTab("recorrentes_form")}>+ Novo Recorrente</button>
+            </div>
+            {recs.length===0
+              ?<div style={{textAlign:"center",color:P.muted,padding:28,fontSize:13}}>Nenhum recorrente cadastrado. Use o botão acima para adicionar.</div>
+              :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {recs.map(r=>{
+                  let count=0,ym=r.start_ym;while(ym<=r.end_ym){count++;ym=addM(ym,1);}
+                  const color=r.type==="income"?P.income:P.expense;
+                  return(
+                    <div key={r.id} style={{background:"rgba(255,255,255,0.03)",border:`1px solid rgba(${hexRgb(color)},0.2)`,borderRadius:12,padding:"14px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+                      <div>
+                        <div style={{fontWeight:800,fontSize:14,color:P.text,marginBottom:3}}>{r.note}</div>
+                        <div style={{fontSize:12,color:P.sub,fontWeight:600}}>{r.cat} · {lbl(r.start_ym)} → {lbl(r.end_ym)} · {count} meses</div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:14}}>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:16,fontWeight:900,color}}>{fmt(r.amount)}<span style={{fontSize:11,color:P.muted,fontWeight:600}}>/mês</span></div>
+                          <div style={{fontSize:11,color:P.muted,fontWeight:600}}>Total: {fmt(r.amount*count)}</div>
+                        </div>
+                        <button style={S.btnD} onClick={()=>delRec(r.id)}>✕</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>}
+          </div>
+
+          {/* Form novo recorrente inline */}
+          <div style={S.card}>
+            <div style={S.secT}>+ Novo Pagamento Recorrente</div>
+            <div style={S.row}>
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Tipo</label>
+                <select style={S.sel} value={recF.type} onChange={e=>setRecF(f=>({...f,type:e.target.value,cat:e.target.value==="income"?CATS_INC[0]:CATS_EXP[0]}))}>
                   <option value="income">Receita</option><option value="expense">Despesa</option>
                 </select>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Categoria</label>
-                <select style={sel} value={recF.cat} onChange={e => setRecF(f => ({ ...f, cat: e.target.value }))}>
-                  {(recF.type === "income" ? CATS_INC : CATS_EXP).map(c => <option key={c}>{c}</option>)}
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Categoria</label>
+                <select style={S.sel} value={recF.cat} onChange={e=>setRecF(f=>({...f,cat:e.target.value}))}>
+                  {(recF.type==="income"?CATS_INC:CATS_EXP).map(c=><option key={c}>{c}</option>)}
                 </select>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Valor/mês (R$)</label>
-                <input style={inp} type="number" placeholder="0,00" value={recF.amount} onChange={e => setRecF(f => ({ ...f, amount: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Valor/mês</label>
+                <input style={S.inp} type="number" placeholder="0,00" value={recF.amount} onChange={e=>setRecF(f=>({...f,amount:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Início</label>
-                <input style={inp} type="month" value={recF.startYM} onChange={e => setRecF(f => ({ ...f, startYM: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Início</label>
+                <input style={S.inp} type="month" value={recF.startYM} onChange={e=>setRecF(f=>({...f,startYM:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Até</label>
-                <input style={inp} type="month" value={recF.endYM} onChange={e => setRecF(f => ({ ...f, endYM: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Até</label>
+                <input style={S.inp} type="month" value={recF.endYM} onChange={e=>setRecF(f=>({...f,endYM:e.target.value}))}/>
               </div>
-              <div style={{ ...fGrp, flex: 2 }}>
-                <label style={fLbl}>Descrição</label>
-                <input style={inp} placeholder="Ex: Salário, Aluguel..." value={recF.note} onChange={e => setRecF(f => ({ ...f, note: e.target.value }))} />
+              <div style={{...S.fGrp,flex:2}}>
+                <label style={S.fLbl}>Descrição</label>
+                <input style={S.inp} placeholder="Ex: Salário, Plano de saúde..." value={recF.note} onChange={e=>setRecF(f=>({...f,note:e.target.value}))}/>
               </div>
-              <button style={btn(P.invest)} onClick={addRec}>+ Criar</button>
+              <button style={S.btn(P.invest)} onClick={addRec}>+ Criar</button>
             </div>
-          </div>
-          <div style={card}>
-            <div style={secT}>Recorrentes Cadastrados</div>
-            {recs.length === 0
-              ? <div style={{ textAlign: "center", color: "#444", padding: 32 }}>Nenhum recorrente cadastrado ainda.</div>
-              : <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead><tr>{["Tipo","Cat.","Valor/mês","Período","Descrição",""].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {recs.map(r => (
-                      <tr key={r.id}>
-                        <td style={td}><span style={bdg(r.type === "income" ? P.income : P.expense)}>{r.type === "income" ? "Receita" : "Despesa"}</span></td>
-                        <td style={{ ...td, color: "#888" }}>{r.cat}</td>
-                        <td style={{ ...td, fontWeight: 700, color: r.type === "income" ? P.income : P.expense }}>{fmt(r.amount)}</td>
-                        <td style={{ ...td, color: "#555", fontSize: 11 }}>{lbl(r.start_ym)} → {lbl(r.end_ym)}</td>
-                        <td style={{ ...td, color: "#aaa" }}>{r.note}</td>
-                        <td style={td}><button style={btnD} onClick={() => delRec(r.id)}>✕</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>}
           </div>
         </>}
 
-        {/* ═══ FLUXO DE CAIXA ═════════════════════════════════════════════ */}
-        {tab === "fluxo" && <>
-          <div style={{ fontSize: 12, color: "#555", marginBottom: 14 }}>
-            Próximos 6 meses · <span style={{ color: "#4ade80" }}>✓ Confirmado</span> · <span style={{ color: "#60a5fa" }}>◌ Previsto</span>
+        {/* ══ FLUXO DE CAIXA ═════════════════════════════════════════════ */}
+        {tab==="fluxo" && <>
+          <div style={{fontSize:13,color:P.sub,marginBottom:14,fontWeight:600}}>
+            Próximos 6 meses · <span style={{color:P.income}}>✓ Confirmado</span> · <span style={{color:P.surplus}}>◌ Previsto</span>
           </div>
-          <div style={{ ...card, marginBottom: 14 }}>
-            <div style={secT}>Resumo — Próximos 6 Meses</div>
-            <ResponsiveContainer width="100%" height={210}>
+          <div style={{...S.card,marginBottom:14}}>
+            <div style={S.secT}>Resumo — Próximos 6 Meses</div>
+            <ResponsiveContainer width="100%" height={mob?180:210}>
               <BarChart data={cashFlow}>
-                <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#666" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} />
-                <Tooltip content={<CTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 11, color: "#777" }} />
-                <Bar dataKey="income" name="Receitas" fill={P.income} radius={[3, 3, 0, 0]} />
-                <Bar dataKey="expense" name="Despesas" fill={P.expense} radius={[3, 3, 0, 0]} />
+                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                <XAxis dataKey="label" tick={{fontSize:11,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"}/>
+                <Tooltip content={<CTooltip/>}/>
+                <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                <Bar dataKey="income" name="Receitas" fill={P.income} radius={[4,4,0,0]}/>
+                <Bar dataKey="expense" name="Despesas" fill={P.expense} radius={[4,4,0,0]}/>
               </BarChart>
             </ResponsiveContainer>
           </div>
-          {cashFlow.map(cf => (
-            <div key={cf.ym} style={{ ...card, marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
-                onClick={() => setExpandedCF(p => ({ ...p, [cf.ym]: !p[cf.ym] }))}>
-                <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                  <span style={{ fontWeight: 800, fontSize: 15, color: cf.ym === TODAY_YM ? P.gold : "#ddd" }}>
-                    {cf.label} {cf.ym === TODAY_YM && <span style={{ fontSize: 11, color: P.gold }}>(mês atual)</span>}
+          {cashFlow.map(cf=>(
+            <div key={cf.ym} style={{...S.card,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",flexWrap:"wrap",gap:8}}
+                onClick={()=>setExpandedCF(p=>({...p,[cf.ym]:!p[cf.ym]}))}>
+                <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:900,fontSize:15,color:cf.ym===TODAY_YM?P.gold:P.text}}>
+                    {cf.label}{cf.ym===TODAY_YM&&<span style={{fontSize:11,color:P.gold,marginLeft:6}}>(mês atual)</span>}
                   </span>
-                  <span style={{ fontSize: 12, color: P.income }}>+{fmt(cf.income)}</span>
-                  <span style={{ fontSize: 12, color: P.expense }}>−{fmt(cf.expense)}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: cf.saldo >= 0 ? P.surplus : P.expense }}>=&nbsp;{fmt(cf.saldo)}</span>
+                  <span style={{fontSize:13,color:P.income,fontWeight:700}}>+{fmt(cf.income)}</span>
+                  <span style={{fontSize:13,color:P.expense,fontWeight:700}}>−{fmt(cf.expense)}</span>
+                  <span style={{fontSize:14,fontWeight:900,color:cf.saldo>=0?P.surplus:P.expense}}>=&nbsp;{fmt(cf.saldo)}</span>
                 </div>
-                <span style={{ fontSize: 12, color: "#555" }}>{expandedCF[cf.ym] ? "▲" : "▼"}</span>
+                <span style={{fontSize:14,color:P.muted,fontWeight:700}}>{expandedCF[cf.ym]?"▲":"▼"}</span>
               </div>
-              {expandedCF[cf.ym] && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 6, marginBottom: 12 }}>
-                    {cf.cats.map((c, i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", borderRadius: 7, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                        <span style={{ fontSize: 11, color: "#888" }}>{c.cat}</span>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: P.expense }}>{fmt(c.v)}</span>
+              {expandedCF[cf.ym]&&(
+                <div style={{marginTop:14}}>
+                  <div style={{display:"grid",gridTemplateColumns:mob?"1fr 1fr":"repeat(auto-fill,minmax(180px,1fr))",gap:7,marginBottom:14}}>
+                    {cf.cats.map((c,i)=>(
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderRadius:9,background:"rgba(255,255,255,0.04)",border:`1px solid ${P.border}`}}>
+                        <span style={{fontSize:12,color:P.sub,fontWeight:600}}>{c.cat}</span>
+                        <span style={{fontSize:13,fontWeight:800,color:P.expense}}>{fmt(c.v)}</span>
                       </div>
                     ))}
                   </div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                    <thead><tr>{["Categoria","Descrição","Valor","Status"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
-                    <tbody>
-                      {cf.entries.sort((a, b) => a.type.localeCompare(b.type) || b.amount - a.amount).map(e => (
-                        <tr key={e.id} style={{ opacity: e.confirmed ? 1 : 0.7 }}>
-                          <td style={{ ...td, color: "#888" }}>{e.cat}</td>
-                          <td style={{ ...td, color: "#aaa" }}>{e.note}{e.i_total && <span style={{ color: "#60a5fa", marginLeft: 4 }}>[{e.i_num}/{e.i_total}]</span>}</td>
-                          <td style={{ ...td, fontWeight: 700, color: e.type === "income" ? P.income : P.expense }}>{e.type === "income" ? "+" : "-"}{fmt(e.amount)}</td>
-                          <td style={td}>{e.confirmed ? <span style={{ color: "#4ade80" }}>✓</span> : <span style={{ color: "#60a5fa" }}>◌</span>}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:mob?450:0}}>
+                      <thead><tr>{["Categoria","Descrição","Valor","Status"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {cf.entries.sort((a,b)=>a.type.localeCompare(b.type)||b.amount-a.amount).map(e=>(
+                          <tr key={e.id} style={{opacity:e.confirmed?1:0.72}}>
+                            <td style={{...S.td,color:P.sub,fontWeight:600}}>{e.cat}</td>
+                            <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
+                            <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
+                            <td style={S.td}>{e.confirmed?<span style={{color:P.income,fontWeight:700}}>✓</span>:<span style={{color:P.surplus,fontWeight:700}}>◌</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
           ))}
         </>}
 
-        {/* ═══ INVESTIMENTOS ══════════════════════════════════════════════ */}
-        {tab === "investimentos" && <>
-          <div style={card}>
-            <div style={secT}>Registrar Investimento</div>
-            <div style={row}>
-              <div style={fGrp}>
-                <label style={fLbl}>Tipo</label>
-                <select style={sel} value={invF.type} onChange={e => setInvF(f => ({ ...f, type: e.target.value }))}>
-                  {INVEST_T.map(t => <option key={t}>{t}</option>)}
+        {/* ══ INVESTIMENTOS ══════════════════════════════════════════════ */}
+        {tab==="investimentos" && <>
+          <div style={{...S.card,marginBottom:14,background:"rgba(251,191,36,0.06)",border:`1px solid rgba(${hexRgb(P.gold)},0.2)`}}>
+            <span style={{fontSize:13,color:P.sub,fontWeight:600}}>💰 Patrimônio líquido atual: </span>
+            <strong style={{color:P.gold,fontSize:16}}>R$ 400.000</strong>
+            <span style={{fontSize:12,color:P.muted,marginLeft:12}}>Cadastre suas aplicações para rastrear o crescimento.</span>
+          </div>
+          <div style={S.card}>
+            <div style={S.secT}>Registrar Investimento</div>
+            <div style={S.row}>
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Tipo</label>
+                <select style={S.sel} value={invF.type} onChange={e=>setInvF(f=>({...f,type:e.target.value}))}>
+                  {INVEST_T.map(t=><option key={t}>{t}</option>)}
                 </select>
               </div>
-              <div style={{ ...fGrp, flex: 2 }}>
-                <label style={fLbl}>Nome / Ticker</label>
-                <input style={inp} placeholder="CDB XP, HGLG11, Tesouro IPCA+..." value={invF.name} onChange={e => setInvF(f => ({ ...f, name: e.target.value }))} />
+              <div style={{...S.fGrp,flex:2}}>
+                <label style={S.fLbl}>Nome / Ticker</label>
+                <input style={S.inp} placeholder="CDB XP, HGLG11..." value={invF.name} onChange={e=>setInvF(f=>({...f,name:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Valor (R$)</label>
-                <input style={inp} type="number" placeholder="0,00" value={invF.amount} onChange={e => setInvF(f => ({ ...f, amount: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Valor (R$)</label>
+                <input style={S.inp} type="number" placeholder="0,00" value={invF.amount} onChange={e=>setInvF(f=>({...f,amount:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Retorno a.a. (%)</label>
-                <input style={inp} type="number" placeholder="12.5" value={invF.returnRate} onChange={e => setInvF(f => ({ ...f, returnRate: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Retorno a.a. (%)</label>
+                <input style={S.inp} type="number" placeholder="12.5" value={invF.returnRate} onChange={e=>setInvF(f=>({...f,returnRate:e.target.value}))}/>
               </div>
-              <div style={fGrp}>
-                <label style={fLbl}>Data do Aporte</label>
-                <input style={inp} type="month" value={invF.ym} onChange={e => setInvF(f => ({ ...f, ym: e.target.value }))} />
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Data Aporte</label>
+                <input style={S.inp} type="month" value={invF.ym} onChange={e=>setInvF(f=>({...f,ym:e.target.value}))}/>
               </div>
-              <button style={btn(P.invest)} onClick={addInv}>+ Registrar</button>
+              <button style={S.btn(P.invest)} onClick={addInv}>+ Registrar</button>
             </div>
           </div>
-          {invs.length > 0 && <div style={{ ...card, marginTop: 14 }}>
-            <div style={secT}>Carteira</div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead><tr>{["Tipo","Nome","Aportado","Retorno a.a.","Projeção 12m",""].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr></thead>
-              <tbody>
-                {invs.map(i => (
-                  <tr key={i.id}>
-                    <td style={td}><span style={bdg(P.invest)}>{i.type}</span></td>
-                    <td style={{ ...td, fontWeight: 600, color: "#ccc" }}>{i.name}</td>
-                    <td style={{ ...td, fontWeight: 700, color: P.invest }}>{fmt(i.amount)}</td>
-                    <td style={{ ...td, color: P.income }}>+{i.return_rate}%</td>
-                    <td style={{ ...td, color: P.gold, fontWeight: 700 }}>{fmt(+i.amount * Math.pow(1 + +i.return_rate / 100 / 12, 12))}</td>
-                    <td style={td}><button style={btnD} onClick={() => delInv(i.id)}>✕</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {invs.length>0&&<div style={{...S.card,marginTop:14}}>
+            <div style={S.secT}>Carteira</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:mob?500:0}}>
+                <thead><tr>{["Tipo","Nome","Aportado","a.a.","Proj. 12m",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {invs.map(i=>(
+                    <tr key={i.id}>
+                      <td style={S.td}><span style={S.bdg(P.invest)}>{i.type}</span></td>
+                      <td style={{...S.td,fontWeight:700,color:P.text}}>{i.name}</td>
+                      <td style={{...S.td,fontWeight:800,color:P.invest}}>{fmt(i.amount)}</td>
+                      <td style={{...S.td,color:P.income,fontWeight:700}}>+{i.return_rate}%</td>
+                      <td style={{...S.td,color:P.gold,fontWeight:900}}>{fmt(+i.amount*Math.pow(1+ +i.return_rate/100/12,12))}</td>
+                      <td style={S.td}><button style={S.btnD} onClick={()=>delInv(i.id)}>✕</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{display:"flex",gap:20,marginTop:12,padding:"10px 10px 0",borderTop:`1px solid ${P.border}`}}>
+              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Total: <strong style={{color:P.invest}}>{fmt(totInv)}</strong></span>
+              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Proj. 12m: <strong style={{color:P.gold}}>{fmt(invs.reduce((s,i)=>s+ +i.amount*Math.pow(1+ +i.return_rate/100/12,12),0))}</strong></span>
+            </div>
           </div>}
+          {invs.length===0&&<div style={{...S.card,marginTop:14,textAlign:"center",color:P.muted,padding:40,fontSize:14}}>Nenhum investimento cadastrado ainda.</div>}
         </>}
 
-        {/* ═══ GRÁFICOS ═══════════════════════════════════════════════════ */}
-        {tab === "graficos" && <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <div style={card}>
-              <div style={secT}>Receitas × Despesas (área)</div>
-              <ResponsiveContainer width="100%" height={240}>
+        {/* ══ GRÁFICOS ═══════════════════════════════════════════════════ */}
+        {tab==="graficos" && <>
+          <div style={grid2}>
+            <div style={S.card}>
+              <div style={S.secT}>Receitas × Despesas (área)</div>
+              <ResponsiveContainer width="100%" height={mob?200:240}>
                 <AreaChart data={monthSummary}>
                   <defs>
-                    <linearGradient id="gI" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.income} stopOpacity={0.25} /><stop offset="100%" stopColor={P.income} stopOpacity={0.02} /></linearGradient>
-                    <linearGradient id="gE" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.expense} stopOpacity={0.25} /><stop offset="100%" stopColor={P.expense} stopOpacity={0.02} /></linearGradient>
+                    <linearGradient id="gI" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.income} stopOpacity={0.3}/><stop offset="100%" stopColor={P.income} stopOpacity={0.02}/></linearGradient>
+                    <linearGradient id="gE" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.expense} stopOpacity={0.3}/><stop offset="100%" stopColor={P.expense} stopOpacity={0.02}/></linearGradient>
                   </defs>
-                  <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} width={60} />
-                  <Tooltip content={<CTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: "#777" }} />
-                  <Area type="monotone" dataKey="In" name="Receitas" stroke={P.income} fill="url(#gI)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="Out" name="Despesas" stroke={P.expense} fill="url(#gE)" strokeWidth={2} />
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={60}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                  <Area type="monotone" dataKey="In" name="Receitas" stroke={P.income} fill="url(#gI)" strokeWidth={2.5}/>
+                  <Area type="monotone" dataKey="Out" name="Despesas" stroke={P.expense} fill="url(#gE)" strokeWidth={2.5}/>
                 </AreaChart>
               </ResponsiveContainer>
             </div>
 
-            <div style={card}>
-              <div style={secT}>Excedente Mensal</div>
-              <ResponsiveContainer width="100%" height={240}>
+            <div style={S.card}>
+              <div style={S.secT}>Excedente Mensal</div>
+              <ResponsiveContainer width="100%" height={mob?200:240}>
                 <BarChart data={monthSummary}>
-                  <defs><linearGradient id="gS" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.surplus} stopOpacity={0.9} /><stop offset="100%" stopColor={P.surplus} stopOpacity={0.3} /></linearGradient></defs>
-                  <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} width={60} />
-                  <Tooltip content={<CTooltip />} />
-                  <Bar dataKey="Saldo" name="Excedente" fill="url(#gS)" radius={[5, 5, 0, 0]} />
+                  <defs><linearGradient id="gS" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.surplus} stopOpacity={0.9}/><stop offset="100%" stopColor={P.surplus} stopOpacity={0.3}/></linearGradient></defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={60}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Bar dataKey="Saldo" name="Excedente" fill="url(#gS)" radius={[5,5,0,0]}/>
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
-            <div style={card}>
-              <div style={secT}>Evolução de Receitas e Despesas</div>
-              <ResponsiveContainer width="100%" height={240}>
+            <div style={S.card}>
+              <div style={S.secT}>Evolução Receitas × Despesas</div>
+              <ResponsiveContainer width="100%" height={mob?200:240}>
                 <LineChart data={monthSummary}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} width={60} />
-                  <Tooltip content={<CTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: "#777" }} />
-                  <Line type="monotone" dataKey="Out" name="Despesas" stroke={P.expense} strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="In" name="Receitas" stroke={P.income} strokeWidth={2} dot={{ r: 3 }} />
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={60}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                  <Line type="monotone" dataKey="Out" name="Despesas" stroke={P.expense} strokeWidth={2.5} dot={{r:4,fill:P.expense,strokeWidth:0}}/>
+                  <Line type="monotone" dataKey="In" name="Receitas" stroke={P.income} strokeWidth={2.5} dot={{r:4,fill:P.income,strokeWidth:0}}/>
                 </LineChart>
               </ResponsiveContainer>
             </div>
 
-            {invs.length > 0 ? (
-              <div style={card}>
-                <div style={secT}>Crescimento Projetado dos Investimentos</div>
-                <ResponsiveContainer width="100%" height={240}>
+            {invs.length>0?(
+              <div style={S.card}>
+                <div style={S.secT}>Crescimento Projetado dos Investimentos</div>
+                <ResponsiveContainer width="100%" height={mob?200:240}>
                   <AreaChart data={investProj}>
-                    <defs><linearGradient id="gV" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.invest} stopOpacity={0.3} /><stop offset="100%" stopColor={P.invest} stopOpacity={0.02} /></linearGradient></defs>
-                    <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                    <XAxis dataKey="mes" tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 9, fill: "#555" }} axisLine={false} tickLine={false} tickFormatter={v => "R$" + (v / 1000).toFixed(0) + "k"} width={70} />
-                    <Tooltip content={<CTooltip />} />
-                    <Area type="monotone" dataKey="Patrimônio" stroke={P.invest} fill="url(#gV)" strokeWidth={2} dot={{ r: 3, fill: P.invest }} />
+                    <defs><linearGradient id="gV" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={P.invest} stopOpacity={0.35}/><stop offset="100%" stopColor={P.invest} stopOpacity={0.02}/></linearGradient></defs>
+                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                    <XAxis dataKey="mes" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={70}/>
+                    <Tooltip content={<CTooltip/>}/>
+                    <Area type="monotone" dataKey="Patrimônio" stroke={P.invest} fill="url(#gV)" strokeWidth={2.5} dot={{r:4,fill:P.invest,strokeWidth:0}}/>
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            ) : (
-              <div style={{ ...card, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <div style={{ fontSize: 13, color: "#444", textAlign: "center" }}>Cadastre investimentos para ver o gráfico de crescimento patrimonial.</div>
+            ):(
+              <div style={{...S.card,display:"flex",alignItems:"center",justifyContent:"center",minHeight:240}}>
+                <div style={{fontSize:13,color:P.muted,textAlign:"center",fontWeight:600}}>
+                  Cadastre investimentos para ver o gráfico de crescimento patrimonial.
+                </div>
               </div>
             )}
           </div>
