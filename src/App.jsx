@@ -312,6 +312,10 @@ function Dashboard({ session }) {
   const [filterYM,  setFilterYM]  = useState("all");
   const [filterCat, setFilterCat] = useState("all"); // for drill-down
   const [expandedCF,setExpandedCF]= useState({});
+  const [importStep,   setImportStep]   = useState("upload"); // upload|loading|preview|done
+  const [importItems,  setImportItems]  = useState([]);
+  const [importError,  setImportError]  = useState(null);
+  const [importSaving, setImportSaving] = useState(false);
 
   const notify = (msg, ok = true) => { setNotif({ msg, ok }); setTimeout(() => setNotif(null), 3000); };
 
@@ -506,6 +510,91 @@ function Dashboard({ session }) {
   const delInv = async id => { await supabase.from("investments").delete().eq("id",id); setInvs(p=>p.filter(i=>i.id!==id)); };
   const logout = async () => { await supabase.auth.signOut(); };
 
+  // ── Import via IA ─────────────────────────────────────────────────────
+  const IMPORT_PROMPT = `Analise este extrato de investimentos e extraia TODOS os ativos com posição atual (não vendidos/resgatados totalmente).
+Retorne SOMENTE um JSON array válido, sem markdown, sem texto adicional:
+[{"name":"nome completo ou ticker","type":"Ações|FIIs|Renda Fixa|Fundos|ETF|BDR|Cripto","amount":valor_number,"return_rate":taxa_anual_number,"ym":"AAAA-MM"}]
+Regras:
+- Ações/ETFs/BDRs/FIIs listados: amount = preço_médio × quantidade
+- Renda Fixa (CRI/CRA/Debênture/CDB/LCI/LCA): amount = valor_de_compra, return_rate = taxa_anual_percentual (ex: 12.5)
+- Fundos de investimento: amount = valor_aplicado_ajustado
+- ym = mês da compra no formato AAAA-MM (se indisponível, use o mês atual do extrato)
+- return_rate = 0 se não disponível
+- Inclua ticker/código no name quando possível
+Retorne APENAS o JSON array, sem nenhum texto adicional.`;
+
+  const handleImportFile = async (file) => {
+    setImportStep("loading"); setImportError(null);
+    try {
+      const ext = file.name.split('.').pop().toLowerCase();
+      let messages;
+
+      if (ext === 'pdf') {
+        const base64 = await new Promise((res,rej)=>{
+          const r = new FileReader();
+          r.onload = () => res(r.result.split(',')[1]);
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        });
+        messages = [{role:'user',content:[
+          {type:'document',source:{type:'base64',media_type:'application/pdf',data:base64}},
+          {type:'text',text:IMPORT_PROMPT}
+        ]}];
+      } else {
+        let text;
+        if (ext === 'csv') {
+          text = await file.text();
+        } else {
+          // Excel: use SheetJS (npm install xlsx required)
+          const buf = await file.arrayBuffer();
+          try {
+            const XLSX = await import('xlsx');
+            const wb = XLSX.read(new Uint8Array(buf));
+            text = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
+          } catch {
+            throw new Error("Instale o pacote xlsx: npm install xlsx");
+          }
+        }
+        messages = [{role:'user',content:`${IMPORT_PROMPT}\n\nExtrato:\n${text.slice(0,15000)}`}];
+      }
+
+      // Proxy seguro — chama /api/claude-proxy (Edge Function na Vercel)
+      const resp = await fetch('/api/claude-proxy', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,messages})
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message);
+
+      const raw = data.content.filter(c=>c.type==='text').map(c=>c.text).join('');
+      const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+
+      setImportItems(parsed.map((item,i)=>({
+        ...item, _id:i, _sel:true,
+        amount:      Math.round((+item.amount||0)*100)/100,
+        return_rate: +item.return_rate || 0,
+        ym:          item.ym || TODAY_YM,
+      })));
+      setImportStep("preview");
+    } catch(err) {
+      setImportError(`Erro ao processar: ${err.message}`);
+      setImportStep("upload");
+    }
+  };
+
+  const saveImportedItems = async () => {
+    setImportSaving(true);
+    const rows = importItems.filter(i=>i._sel).map(i=>({
+      user_id:userId, type:i.type, name:i.name,
+      amount:i.amount, ym:i.ym, return_rate:i.return_rate
+    }));
+    await supabase.from('investments').insert(rows);
+    await loadAll();
+    setImportSaving(false);
+    setImportStep("done");
+  };
+
   // ── Responsive style helpers ───────────────────────────────────────────
   const grid2 = { display:"grid", gridTemplateColumns: mob?"1fr":"1fr 1fr", gap:14 };
   const grid4 = { display:"grid", gridTemplateColumns: mob?"1fr 1fr":"repeat(4,1fr)", gap:12, marginBottom:18 };
@@ -534,6 +623,7 @@ function Dashboard({ session }) {
     {id:"fluxo",       label: mob?"📅":"Fluxo"},
     {id:"investimentos",label:mob?"📈":"Investimentos"},
     {id:"graficos",    label: mob?"📉":"Gráficos"},
+    {id:"importar",    label: mob?"📥":"Importar"},
   ];
 
   if (dbLoading) return <div style={{ minHeight:"100vh", background:"#08080f", display:"flex", alignItems:"center", justifyContent:"center", color:P.gold, fontSize:15, fontFamily:"'DM Sans',sans-serif", fontWeight:700 }}>Carregando seus dados...</div>;
@@ -1177,6 +1267,149 @@ function Dashboard({ session }) {
               </div>
             )}
           </div>
+        </>}
+
+        {/* ══ IMPORTAR ════════════════════════════════════════════════════ */}
+        {tab==="importar" && <>
+
+          {/* STEP: upload */}
+          {importStep==="upload" && <>
+            <div style={{...S.card,marginBottom:14}}>
+              <div style={S.secT}>📥 Importar Extrato de Investimentos</div>
+              <div style={{fontSize:13,color:P.sub,marginBottom:20,lineHeight:1.8}}>
+                Faça upload do extrato da sua corretora. A IA lê e extrai seus ativos automaticamente.<br/>
+                <strong style={{color:P.gold}}>Formatos aceitos: PDF · Excel (.xlsx) · CSV</strong><br/>
+                <span style={{fontSize:12,color:P.muted}}>Compatível com EQI, BTG, XP, Rico, Nubank, Inter, MyProfit e outros.</span>
+              </div>
+
+              {/* Drop zone */}
+              <div onClick={()=>document.getElementById("importFileInput").click()} style={{
+                border:`2px dashed rgba(${hexRgb(P.gold)},0.35)`,borderRadius:14,
+                padding:"40px 24px",textAlign:"center",cursor:"pointer",
+                background:"rgba(251,191,36,0.04)",transition:"border 0.2s",
+              }}>
+                <div style={{fontSize:44,marginBottom:12}}>📄</div>
+                <div style={{fontSize:15,fontWeight:800,color:P.text,marginBottom:6}}>Clique para selecionar o arquivo</div>
+                <div style={{fontSize:12,color:P.muted}}>PDF, Excel (.xlsx / .xls) ou CSV · Máx. 20MB</div>
+                <input id="importFileInput" type="file" accept=".pdf,.xlsx,.xls,.csv"
+                  style={{display:"none"}}
+                  onChange={e=>{const f=e.target.files?.[0];if(f)handleImportFile(f);e.target.value="";}}/>
+              </div>
+
+              {importError&&<div style={{marginTop:14,fontSize:13,color:P.expense,padding:"10px 14px",background:"rgba(252,165,165,0.08)",borderRadius:10,fontWeight:600}}>⚠️ {importError}</div>}
+            </div>
+
+            <div style={{...S.card,background:"rgba(255,255,255,0.02)"}}>
+              <div style={{fontSize:11,fontWeight:800,color:P.muted,marginBottom:12,textTransform:"uppercase",letterSpacing:1}}>Como funciona</div>
+              <div style={{display:"grid",gridTemplateColumns:mob?"1fr":"repeat(3,1fr)",gap:12}}>
+                {[
+                  {icon:"1️⃣",title:"Upload",desc:"Selecione o PDF ou Excel do extrato da sua corretora"},
+                  {icon:"2️⃣",title:"IA analisa",desc:"Claude lê o arquivo e identifica todos os seus ativos automaticamente"},
+                  {icon:"3️⃣",title:"Confirme",desc:"Revise os dados, edite se necessário e salve no seu portfólio"},
+                ].map(s=>(
+                  <div key={s.title} style={{padding:"16px",borderRadius:12,background:"rgba(255,255,255,0.03)",border:`1px solid ${P.border}`}}>
+                    <div style={{fontSize:24,marginBottom:8}}>{s.icon}</div>
+                    <div style={{fontSize:13,fontWeight:800,color:P.text,marginBottom:4}}>{s.title}</div>
+                    <div style={{fontSize:12,color:P.sub,lineHeight:1.5}}>{s.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>}
+
+          {/* STEP: loading */}
+          {importStep==="loading"&&(
+            <div style={{...S.card,textAlign:"center",padding:"60px 24px"}}>
+              <div style={{fontSize:44,marginBottom:16}}>🤖</div>
+              <div style={{fontSize:16,fontWeight:900,color:P.gold,marginBottom:8}}>Analisando seu extrato...</div>
+              <div style={{fontSize:13,color:P.sub}}>A IA está lendo o arquivo e identificando seus investimentos. Aguarde alguns segundos.</div>
+            </div>
+          )}
+
+          {/* STEP: preview */}
+          {importStep==="preview"&&<>
+            <div style={{...S.card,marginBottom:14,background:"rgba(110,231,160,0.05)",border:`1px solid rgba(${hexRgb(P.income)},0.2)`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+                <div>
+                  <div style={{fontWeight:900,fontSize:15,color:P.income,marginBottom:3}}>
+                    ✅ {importItems.length} investimentos identificados
+                  </div>
+                  <div style={{fontSize:12,color:P.sub}}>Revise, edite e confirme os que deseja salvar no portfólio.</div>
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <button style={{...S.btn(P.muted),color:P.text,fontSize:12}} onClick={()=>{setImportStep("upload");setImportItems([]);setImportError(null);}}>← Novo arquivo</button>
+                  <button style={S.btn(P.income)} disabled={importSaving||!importItems.some(i=>i._sel)} onClick={saveImportedItems}>
+                    {importSaving?"Salvando...": `💾 Salvar ${importItems.filter(i=>i._sel).length} selecionados`}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div style={S.card}>
+              <div style={{fontSize:12,color:P.sub,marginBottom:10,fontWeight:600}}>
+                💡 Edite nome, tipo, valor ou taxa antes de salvar. Desmarque itens que não quiser importar.
+              </div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:650}}>
+                  <thead>
+                    <tr>
+                      <th style={{...S.th,width:36}}>
+                        <input type="checkbox"
+                          checked={importItems.length>0&&importItems.every(i=>i._sel)}
+                          onChange={e=>setImportItems(p=>p.map(i=>({...i,_sel:e.target.checked})))}/>
+                      </th>
+                      {["Nome / Ticker","Tipo","Valor (R$)","Retorno a.a. %","Mês Aporte"].map(h=><th key={h} style={S.th}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importItems.map((item,idx)=>(
+                      <tr key={item._id} style={{opacity:item._sel?1:0.4}}>
+                        <td style={S.td}>
+                          <input type="checkbox" checked={item._sel}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,_sel:e.target.checked}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px"}} value={item.name}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,name:e.target.value}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <select style={{...S.sel,fontSize:12,padding:"5px 8px"}} value={item.type}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,type:e.target.value}:i))}>
+                            {INVEST_T.map(t=><option key={t}>{t}</option>)}
+                          </select>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:120}} type="number" value={item.amount}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,amount:+e.target.value}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:80}} type="number" value={item.return_rate}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,return_rate:+e.target.value}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:120}} type="month" value={item.ym}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,ym:e.target.value}:i))}/>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>}
+
+          {/* STEP: done */}
+          {importStep==="done"&&(
+            <div style={{...S.card,textAlign:"center",padding:"60px 24px"}}>
+              <div style={{fontSize:44,marginBottom:16}}>🎉</div>
+              <div style={{fontSize:18,fontWeight:900,color:P.income,marginBottom:8}}>Importação concluída!</div>
+              <div style={{fontSize:13,color:P.sub,marginBottom:24}}>Seus ativos foram adicionados ao portfólio com sucesso.</div>
+              <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+                <button style={S.btn(P.invest)} onClick={()=>{setTab("investimentos");setImportStep("upload");}}>📈 Ver Investimentos</button>
+                <button style={{...S.btn(P.muted),color:P.text}} onClick={()=>{setImportStep("upload");setImportItems([]);}}>📥 Importar mais</button>
+              </div>
+            </div>
+          )}
         </>}
 
       </main>
