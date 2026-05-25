@@ -421,27 +421,51 @@ function Dashboard({ session }) {
 
   const investTypes = useMemo(() => [...new Set(invs.map(i => i.type))], [invs]);
 
-  // Parcelas dinâmicas — baseadas nos lançamentos reais do usuário no banco
+  // Parcelas dinâmicas — detecta por i_group (form) E por agrupamento de nota (seed)
   const installSummary = useMemo(() => {
-    // Agrupa lançamentos que têm i_group (parcelados)
+    const results = {};
+
+    // 1) Lançamentos com i_group (adicionados pelo formulário)
     const groups = {};
     txs.filter(t => t.i_group).forEach(t => {
       if (!groups[t.i_group]) groups[t.i_group] = [];
       groups[t.i_group].push(t);
     });
-
-    return Object.entries(groups).map(([gid, items]) => {
+    Object.entries(groups).forEach(([gid, items]) => {
       const sorted = [...items].sort((a,b) => a.ym.localeCompare(b.ym));
-      const total  = sorted.length;
-      const paid   = sorted.filter(t => t.confirmed).length;
+      const name = (sorted[0].note || "").replace(/\s\d+\/\d+$/, "");
+      results[`g_${gid}`] = { items: sorted, name };
+    });
+
+    // 2) Lançamentos sem i_group: agrupa por nota+valor+tipo (dados do seed)
+    const noGroup = txs.filter(t => !t.i_group && t.type === "expense");
+    const byKey = {};
+    noGroup.forEach(t => {
+      const key = `${t.note}__${t.amount}`;
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(t);
+    });
+    Object.entries(byKey).forEach(([key, items]) => {
+      if (items.length < 2) return; // não é parcelado se só aparece 1x
+      const sorted = [...items].sort((a,b) => a.ym.localeCompare(b.ym));
+      results[`k_${key}`] = { items: sorted, name: sorted[0].note };
+    });
+
+    // Monta o resumo final
+    return Object.values(results).map(({ items, name }) => {
+      const total     = items.length;
+      const paid      = items.filter(t => t.confirmed).length;
       const remaining = total - paid;
       if (remaining <= 0) return null;
-      const monthlyVal = +sorted[0].amount;
-      const totalValue = sorted.reduce((s,t) => s + +t.amount, 0);
-      const lastYM  = sorted[total-1].ym;
-      const firstYM = sorted[0].ym;
-      const name    = (sorted[0].note || "").replace(/\s\d+\/\d+$/, ""); // remove "2/6"
-      return { name, total, paid, remaining, monthlyVal, totalValue, firstYM, lastYM, cat: sorted[0].cat };
+      const monthlyVal = +items[0].amount;
+      const totalValue = items.reduce((s,t) => s + +t.amount, 0);
+      return {
+        name,
+        total, paid, remaining, monthlyVal, totalValue,
+        firstYM: items[0].ym,
+        lastYM:  items[items.length-1].ym,
+        cat: items[0].cat,
+      };
     }).filter(Boolean).sort((a,b) => b.monthlyVal - a.monthlyVal);
   }, [txs]);
 
