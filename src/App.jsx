@@ -312,14 +312,101 @@ function Dashboard({ session }) {
   const [filterYM,  setFilterYM]  = useState("all");
   const [filterCat, setFilterCat] = useState("all"); // for drill-down
   const [expandedCF,setExpandedCF]= useState({});
-  const [importStep,   setImportStep]   = useState("upload"); // upload|loading|preview|done
+  const [confirmModal, setConfirmModal] = useState(null); // {id, note, amount, ym}
+
+  const openConfirm = (e) => setConfirmModal({id:e.id, note:e.note, amount:+e.amount, ym:e.ym});
+
+  const confirmTx = async () => {
+    if (!confirmModal) return;
+    await supabase.from("transactions")
+      .update({ confirmed: true, amount: confirmModal.amount })
+      .eq("id", confirmModal.id);
+    setTxs(p => p.map(t => t.id === confirmModal.id
+      ? { ...t, confirmed: true, amount: confirmModal.amount }
+      : t
+    ));
+    setConfirmModal(null);
+    notify("Lançamento confirmado ✓");
+  };
+
+  // Status helper
+  const txStatus = (e) => {
+    if (e.confirmed) return "confirmed";
+    if (e.ym < TODAY_YM) return "late";      // mês passou, não confirmado
+    if (e.ym === TODAY_YM) return "pending";  // mês atual, não confirmado
+    return "future";                           // mês futuro
+  };
   const [importItems,  setImportItems]  = useState([]);
   const [importError,  setImportError]  = useState(null);
   const [importSaving, setImportSaving] = useState(false);
 
   const notify = (msg, ok = true) => { setNotif({ msg, ok }); setTimeout(() => setNotif(null), 3000); };
 
-  const loadAll = useCallback(async () => {
+  const [marketPrices, setMarketPrices] = useState({}); // {TICKER: price}
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketUpdatedAt, setMarketUpdatedAt] = useState(null);
+
+  // Fetch market prices for all tickers on load
+  const fetchMarketPrices = useCallback(async (investments) => {
+    if (!investments || investments.length === 0) return;
+    setMarketLoading(true);
+    const prices = {};
+
+    // Brazilian stocks, FIIs, ETFs, BDRs → brapi.dev (free, no key needed)
+    const brTickers = investments
+      .filter(i => i.ticker && ["Ações","FIIs","ETF","BDR"].includes(i.type))
+      .map(i => i.ticker.toUpperCase().trim())
+      .filter(Boolean);
+
+    if (brTickers.length > 0) {
+      try {
+        const tickers = [...new Set(brTickers)].join(",");
+        const res = await fetch(`https://brapi.dev/api/quote/${tickers}?token=demo`);
+        const data = await res.json();
+        (data.results || []).forEach(r => {
+          if (r.regularMarketPrice) prices[r.symbol] = r.regularMarketPrice;
+        });
+      } catch(e) { console.warn("brapi fetch error", e); }
+    }
+
+    // Crypto → CoinGecko (free, no key needed)
+    const cryptoInvs = investments.filter(i => i.type === "Cripto" && i.ticker);
+    if (cryptoInvs.length > 0) {
+      const cryptoMap = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana", BNB:"binancecoin", ADA:"cardano", DOT:"polkadot", MATIC:"matic-network" };
+      const ids = cryptoInvs.map(i => cryptoMap[i.ticker?.toUpperCase()] || i.ticker?.toLowerCase()).filter(Boolean);
+      if (ids.length > 0) {
+        try {
+          const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${[...new Set(ids)].join(",")}&vs_currencies=brl`);
+          const data = await res.json();
+          cryptoInvs.forEach(inv => {
+            const id = cryptoMap[inv.ticker?.toUpperCase()] || inv.ticker?.toLowerCase();
+            if (data[id]?.brl) prices[inv.ticker.toUpperCase()] = data[id].brl;
+          });
+        } catch(e) { console.warn("coingecko fetch error", e); }
+      }
+    }
+
+    setMarketPrices(prices);
+    setMarketUpdatedAt(new Date().toLocaleTimeString("pt-BR", {hour:"2-digit",minute:"2-digit"}));
+    setMarketLoading(false);
+  }, []);
+
+  // Fetch on load when investments are ready
+  useEffect(() => {
+    if (invs.length > 0) fetchMarketPrices(invs);
+  }, [invs.length]); // eslint-disable-line
+
+  // Compute current value for an investment
+  const currentValue = (inv) => {
+    const t = inv.ticker?.toUpperCase();
+    if (t && marketPrices[t] && inv.quantity) {
+      return marketPrices[t] * +inv.quantity;
+    }
+    return +inv.amount; // fallback: valor aportado
+  };
+
+  const totalCurrentValue = invs.reduce((s,i) => s + currentValue(i), 0);
+  const totalGain = totalCurrentValue - totInv;
     setDbLoading(true);
     const [{ data: t }, { data: r }, { data: i }] = await Promise.all([
       supabase.from("transactions").select("*").eq("user_id", userId).order("ym"),
@@ -345,7 +432,7 @@ function Dashboard({ session }) {
   // ── Forms ──────────────────────────────────────────────────────────────
   const E0 = { modo:"unico", type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"2", endYM:addM(TODAY_YM,11) };
   const R0 = { type:"expense", cat:"Moradia", amount:"", startYM:TODAY_YM, endYM:addM(TODAY_YM,11), note:"" };
-  const I0 = { type:"Renda Fixa", name:"", amount:"", ym:TODAY_YM, returnRate:"" };
+  const I0 = { type:"Renda Fixa", name:"", amount:"", ym:TODAY_YM, returnRate:"", ticker:"", quantity:"" };
   const [txF, setTxF] = useState(E0);
   const [recF,setRecF]= useState(R0);
   const [invF,setInvF]= useState(I0);
@@ -411,16 +498,16 @@ function Dashboard({ session }) {
     })
   , [allE]);
 
-  const investByType = useMemo(() => {
-    const types = [...new Set(invs.map(i => i.type))];
-    return Array.from({length:12}, (_,m) => {
-      const point = { mes: MO[(new Date().getMonth()+m)%12] };
-      types.forEach(t => {
-        const typeInvs = invs.filter(i => i.type === t);
-        point[t] = Math.round(typeInvs.reduce((s,i) => s + +i.amount * Math.pow(1 + +i.return_rate/100/12, m+1), 0));
-      });
-      return point;
+  // Acumulação real por mês de aporte (sem projeção)
+  const investAccum = useMemo(() => {
+    const byYM = {};
+    invs.forEach(i => {
+      if (!byYM[i.ym]) byYM[i.ym] = {};
+      byYM[i.ym][i.type] = (byYM[i.ym][i.type] || 0) + +i.amount;
     });
+    return Object.entries(byYM).sort(([a],[b])=>a.localeCompare(b)).map(([ym,types])=>({
+      label: lbl(ym), ...types,
+    }));
   }, [invs]);
 
   const investTypes = useMemo(() => [...new Set(invs.map(i => i.type))], [invs]);
@@ -500,8 +587,12 @@ function Dashboard({ session }) {
   };
 
   const addInv = async () => {
-    if (!invF.name||!invF.amount||!invF.returnRate) return notify("Preencha todos os campos.",false);
-    await supabase.from("investments").insert({ user_id:userId, type:invF.type, name:invF.name, amount:+invF.amount, ym:invF.ym, return_rate:+invF.returnRate });
+    if (!invF.name||!invF.amount) return notify("Preencha nome e valor.",false);
+    await supabase.from("investments").insert({
+      user_id:userId, type:invF.type, name:invF.name, amount:+invF.amount,
+      ym:invF.ym, return_rate:+invF.returnRate||0,
+      ticker:invF.ticker||null, quantity:+invF.quantity||null,
+    });
     await loadAll(); setInvF(I0); notify("Investimento registrado ✓");
   };
 
@@ -900,21 +991,40 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                 )}
               </div>
             </div>
-            <div style={{overflowX:"auto"}}>
+              <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",minWidth:mob?500:0}}>
-                <thead><tr>{["Mês","Tipo","Categoria","Descrição","Valor","St.",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Mês","Tipo","Categoria","Descrição","Valor","Status",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {[...filtered].filter(e=>!e.isRec).sort((a,b)=>b.ym.localeCompare(a.ym)).map(e=>(
-                    <tr key={e.id} style={{opacity:e.confirmed?1:0.75}}>
-                      <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{lbl(e.ym)}</td>
-                      <td style={S.td}><span style={S.bdg(e.type==="income"?P.income:P.expense)}>{e.type==="income"?"↑":"↓"}</span></td>
-                      <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{e.cat}</td>
-                      <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{fontSize:11,color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
-                      <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
-                      <td style={S.td}>{e.confirmed?<span style={{fontSize:12,color:P.income,fontWeight:700}}>✓</span>:<span style={{fontSize:12,color:P.surplus,fontWeight:700}}>◌</span>}</td>
-                      <td style={S.td}><button style={S.btnD} onClick={()=>delTx(e.id)}>✕</button></td>
-                    </tr>
-                  ))}
+                  {[...filtered].filter(e=>!e.isRec).sort((a,b)=>b.ym.localeCompare(a.ym)).map(e=>{
+                    const st = txStatus(e);
+                    const stStyle = {
+                      confirmed: {color:P.income,  label:"✓ Pago"},
+                      late:      {color:"#fb923c",  label:"⚠️ Atrasado"},
+                      pending:   {color:P.surplus,  label:"◌ Pendente"},
+                      future:    {color:P.muted,    label:"◌ Previsto"},
+                    }[st];
+                    return(
+                      <tr key={e.id} style={{opacity:st==="future"?0.7:1}}>
+                        <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{lbl(e.ym)}</td>
+                        <td style={S.td}><span style={S.bdg(e.type==="income"?P.income:P.expense)}>{e.type==="income"?"↑":"↓"}</span></td>
+                        <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{e.cat}</td>
+                        <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{fontSize:11,color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
+                        <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
+                        <td style={S.td}><span style={{fontSize:12,fontWeight:700,color:stStyle.color}}>{stStyle.label}</span></td>
+                        <td style={{...S.td,display:"flex",gap:6,alignItems:"center"}}>
+                          {st!=="confirmed"&&st!=="future"&&(
+                            <button style={{...S.btn(P.income),padding:"4px 10px",fontSize:11,color:"#08080f"}}
+                              onClick={()=>openConfirm(e)}>✓</button>
+                          )}
+                          {st==="future"&&(
+                            <button style={{...S.btn(P.muted),padding:"4px 10px",fontSize:11,color:P.text}}
+                              onClick={()=>openConfirm(e)}>✓</button>
+                          )}
+                          <button style={S.btnD} onClick={()=>delTx(e.id)}>✕</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1078,16 +1188,31 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                   </div>
                   <div style={{overflowX:"auto"}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:mob?450:0}}>
-                      <thead><tr>{["Categoria","Descrição","Valor","Status"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+                      <thead><tr>{["Categoria","Descrição","Valor","Status",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {cf.entries.sort((a,b)=>a.type.localeCompare(b.type)||b.amount-a.amount).map(e=>(
-                          <tr key={e.id} style={{opacity:e.confirmed?1:0.72}}>
-                            <td style={{...S.td,color:P.sub,fontWeight:600}}>{e.cat}</td>
-                            <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
-                            <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
-                            <td style={S.td}>{e.confirmed?<span style={{color:P.income,fontWeight:700}}>✓</span>:<span style={{color:P.surplus,fontWeight:700}}>◌</span>}</td>
-                          </tr>
-                        ))}
+                        {cf.entries.sort((a,b)=>a.type.localeCompare(b.type)||b.amount-a.amount).map(e=>{
+                          const st = txStatus(e);
+                          const stStyle = {
+                            confirmed:{color:P.income, label:"✓ Pago"},
+                            late:     {color:"#fb923c",label:"⚠️ Atrasado"},
+                            pending:  {color:P.surplus,label:"◌ Pendente"},
+                            future:   {color:P.muted,  label:"◌ Previsto"},
+                          }[st];
+                          return(
+                            <tr key={e.id} style={{opacity:st==="future"?0.7:1}}>
+                              <td style={{...S.td,color:P.sub,fontWeight:600}}>{e.cat}</td>
+                              <td style={{...S.td,color:P.text,fontWeight:500}}>{e.note}{e.i_total&&<span style={{color:P.surplus,marginLeft:4,fontWeight:700}}>[{e.i_num}/{e.i_total}]</span>}</td>
+                              <td style={{...S.td,fontWeight:800,color:e.type==="income"?P.income:P.expense}}>{e.type==="income"?"+":"-"}{fmt(e.amount)}</td>
+                              <td style={S.td}><span style={{fontSize:12,fontWeight:700,color:stStyle.color}}>{stStyle.label}</span></td>
+                              <td style={S.td}>
+                                {st!=="confirmed"&&(
+                                  <button style={{...S.btn(st==="future"?P.muted:P.income),padding:"3px 10px",fontSize:11,color:st==="future"?P.text:"#08080f"}}
+                                    onClick={()=>openConfirm(e)}>✓ Confirmar</button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1099,87 +1224,150 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
         {/* ══ INVESTIMENTOS ══════════════════════════════════════════════ */}
         {tab==="investimentos" && <>
-          <div style={{...S.card,marginBottom:14,background:"rgba(251,191,36,0.06)",border:`1px solid rgba(${hexRgb(P.gold)},0.2)`}}>
-            <span style={{fontSize:13,color:P.sub,fontWeight:600}}>💰 Patrimônio líquido atual: </span>
-            <strong style={{color:P.gold,fontSize:16}}>R$ 400.000</strong>
-            <span style={{fontSize:12,color:P.muted,marginLeft:12}}>Cadastre suas aplicações para rastrear o crescimento.</span>
-          </div>
+
+          {/* Cards de resumo dinâmicos */}
+          {invs.length>0&&(
+            <div style={{display:"grid",gridTemplateColumns:mob?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:14}}>
+              {[
+                {label:"Total Aportado",  value:totInv,          color:P.invest, sub:`${invs.length} ativos`},
+                {label:"Valor Atual",     value:totalCurrentValue,color:P.gold,   sub:marketUpdatedAt?`atualizado ${marketUpdatedAt}`:"preço de compra"},
+                {label:"Ganho / Perda",   value:totalGain,        color:totalGain>=0?P.income:P.expense, sub:totInv>0?`${((totalGain/totInv)*100).toFixed(1)}% sobre aportado`:""},
+                {label:"Ativos c/ Cotação",value:invs.filter(i=>i.ticker&&marketPrices[i.ticker?.toUpperCase()]).length,color:P.surplus,
+                  sub:`de ${invs.length} no total`, isCount:true},
+              ].map(c=>(
+                <div key={c.label} style={{background:`linear-gradient(135deg,rgba(${hexRgb(c.color)},0.1),rgba(0,0,0,0.4))`,border:`1px solid rgba(${hexRgb(c.color)},0.25)`,borderRadius:14,padding:"14px 18px"}}>
+                  <div style={{fontSize:10,textTransform:"uppercase",letterSpacing:2,color:P.muted,marginBottom:4,fontWeight:700}}>{c.label}</div>
+                  <div style={{fontSize:c.isCount?28:20,fontWeight:900,color:c.color,lineHeight:1}}>{c.isCount?c.value:fmt(c.value)}</div>
+                  <div style={{fontSize:11,color:P.muted,marginTop:3,fontWeight:500}}>{c.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Form */}
           <div style={S.card}>
-            <div style={S.secT}>Registrar Investimento</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+              <div style={S.secT}>Registrar Investimento</div>
+              {marketLoading&&<span style={{fontSize:12,color:P.muted,fontWeight:600}}>🔄 Buscando cotações...</span>}
+              {!marketLoading&&marketUpdatedAt&&<button style={{...S.btn(P.muted),padding:"6px 12px",fontSize:11,color:P.text}} onClick={()=>fetchMarketPrices(invs)}>🔄 Atualizar cotações</button>}
+            </div>
             <div style={S.row}>
               <div style={S.fGrp}>
                 <label style={S.fLbl}>Tipo</label>
-                <select style={S.sel} value={invF.type} onChange={e=>setInvF(f=>({...f,type:e.target.value}))}>
+                <select style={S.sel} value={invF.type} onChange={e=>setInvF(f=>({...f,type:e.target.value,returnRate:["Ações","FIIs","ETF","BDR","Cripto"].includes(e.target.value)?"":f.returnRate}))}>
                   {INVEST_T.map(t=><option key={t}>{t}</option>)}
                 </select>
               </div>
               <div style={{...S.fGrp,flex:2}}>
-                <label style={S.fLbl}>Nome / Ticker</label>
-                <input style={S.inp} placeholder="CDB XP, HGLG11..." value={invF.name} onChange={e=>setInvF(f=>({...f,name:e.target.value}))}/>
+                <label style={S.fLbl}>Nome completo</label>
+                <input style={S.inp} placeholder="Ex: Petrobras, Bitcoin, CDB XP..." value={invF.name}
+                  onChange={e=>setInvF(f=>({...f,name:e.target.value}))}/>
               </div>
               <div style={S.fGrp}>
-                <label style={S.fLbl}>Valor (R$)</label>
-                <input style={S.inp} type="number" placeholder="0,00" value={invF.amount} onChange={e=>setInvF(f=>({...f,amount:e.target.value}))}/>
+                <label style={S.fLbl}>Ticker / Código <span style={{color:P.muted,fontSize:10}}>(opcional)</span></label>
+                <input style={S.inp} placeholder="PETR4, BTC, HGLG11..." value={invF.ticker||""}
+                  onChange={e=>setInvF(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
               </div>
               <div style={S.fGrp}>
-                <label style={S.fLbl}>Retorno a.a. (%)</label>
-                <input style={S.inp} type="number" placeholder="12.5" value={invF.returnRate} onChange={e=>setInvF(f=>({...f,returnRate:e.target.value}))}/>
+                <label style={S.fLbl}>Qtde <span style={{color:P.muted,fontSize:10}}>(opcional)</span></label>
+                <input style={S.inp} type="number" placeholder="0" value={invF.quantity||""}
+                  onChange={e=>setInvF(f=>({...f,quantity:e.target.value}))}/>
               </div>
+              <div style={S.fGrp}>
+                <label style={S.fLbl}>Valor Aportado (R$)</label>
+                <input style={S.inp} type="number" placeholder="0,00" value={invF.amount}
+                  onChange={e=>setInvF(f=>({...f,amount:e.target.value}))}/>
+              </div>
+              {/* Rentabilidade só para Renda Fixa e Fundos */}
+              {["Renda Fixa","Poupança","Tesouro Direto","Fundos"].includes(invF.type)&&(
+                <div style={S.fGrp}>
+                  <label style={S.fLbl}>Retorno a.a. (%)</label>
+                  <input style={S.inp} type="number" placeholder="12.5" value={invF.returnRate}
+                    onChange={e=>setInvF(f=>({...f,returnRate:e.target.value}))}/>
+                </div>
+              )}
               <div style={S.fGrp}>
                 <label style={S.fLbl}>Data Aporte</label>
-                <input style={S.inp} type="month" value={invF.ym} onChange={e=>setInvF(f=>({...f,ym:e.target.value}))}/>
+                <input style={S.inp} type="month" value={invF.ym}
+                  onChange={e=>setInvF(f=>({...f,ym:e.target.value}))}/>
               </div>
               <button style={S.btn(P.invest)} onClick={addInv}>+ Registrar</button>
             </div>
+            {["Ações","FIIs","ETF","BDR","Cripto"].includes(invF.type)&&(
+              <div style={{fontSize:12,color:P.surplus,padding:"7px 12px",background:"rgba(147,197,253,0.07)",borderRadius:10,fontWeight:600,marginTop:4}}>
+                💡 Para <strong>{invF.type}</strong> a rentabilidade é variável. Informe o Ticker e a Quantidade para acompanhar a cotação de mercado automaticamente.
+              </div>
+            )}
           </div>
-          {invs.length>0&&<div style={{...S.card,marginTop:14}}>
-            <div style={S.secT}>Crescimento Projetado por Tipo de Ativo — 12 meses</div>
-            <ResponsiveContainer width="100%" height={mob?220:260}>
-              <AreaChart data={investByType}>
-                <defs>
+
+          {/* Gráfico de acumulação real */}
+          {invs.length>0&&investAccum.length>1&&(
+            <div style={{...S.card,marginTop:14}}>
+              <div style={S.secT}>Patrimônio Acumulado por Aporte</div>
+              <ResponsiveContainer width="100%" height={mob?200:240}>
+                <BarChart data={investAccum}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={65}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
                   {investTypes.map((t,i)=>(
-                    <linearGradient key={t} id={`ig${i}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.35}/>
-                      <stop offset="100%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.05}/>
-                    </linearGradient>
+                    <Bar key={t} dataKey={t} stackId="a" fill={PIE_C[i%PIE_C.length]} radius={i===investTypes.length-1?[4,4,0,0]:[0,0,0,0]}/>
                   ))}
-                </defs>
-                <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
-                <XAxis dataKey="mes" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
-                <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={70}/>
-                <Tooltip content={<CTooltip/>}/>
-                <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
-                {investTypes.map((t,i)=>(
-                  <Area key={t} type="monotone" dataKey={t} stackId="1"
-                    stroke={PIE_C[i%PIE_C.length]} fill={`url(#ig${i})`} strokeWidth={2}/>
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>}
-          {invs.length>0&&<div style={{...S.card,marginTop:14}}>
-            <div style={S.secT}>Carteira</div>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:mob?500:0}}>
-                <thead><tr>{["Tipo","Nome","Aportado","a.a.","Proj. 12m",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {invs.map(i=>(
-                    <tr key={i.id}>
-                      <td style={S.td}><span style={S.bdg(P.invest)}>{i.type}</span></td>
-                      <td style={{...S.td,fontWeight:700,color:P.text}}>{i.name}</td>
-                      <td style={{...S.td,fontWeight:800,color:P.invest}}>{fmt(i.amount)}</td>
-                      <td style={{...S.td,color:P.income,fontWeight:700}}>+{i.return_rate}%</td>
-                      <td style={{...S.td,color:P.gold,fontWeight:900}}>{fmt(+i.amount*Math.pow(1+ +i.return_rate/100/12,12))}</td>
-                      <td style={S.td}><button style={S.btnD} onClick={()=>delInv(i.id)}>✕</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                </BarChart>
+              </ResponsiveContainer>
             </div>
-            <div style={{display:"flex",gap:20,marginTop:12,padding:"10px 10px 0",borderTop:`1px solid ${P.border}`}}>
-              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Total: <strong style={{color:P.invest}}>{fmt(totInv)}</strong></span>
-              <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Proj. 12m: <strong style={{color:P.gold}}>{fmt(invs.reduce((s,i)=>s+ +i.amount*Math.pow(1+ +i.return_rate/100/12,12),0))}</strong></span>
+          )}
+
+          {/* Tabela da carteira */}
+          {invs.length>0&&(
+            <div style={{...S.card,marginTop:14}}>
+              <div style={S.secT}>Carteira</div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:mob?600:0}}>
+                  <thead>
+                    <tr>{["Tipo","Nome","Ticker","Aportado","Cotação","Valor Atual","Ganho/Perda",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {invs.map(inv=>{
+                      const tk = inv.ticker?.toUpperCase();
+                      const price = tk && marketPrices[tk];
+                      const curVal = currentValue(inv);
+                      const gain = curVal - +inv.amount;
+                      const gainPct = +inv.amount>0?(gain/+inv.amount*100).toFixed(1):0;
+                      return(
+                        <tr key={inv.id}>
+                          <td style={S.td}><span style={S.bdg(P.invest)}>{inv.type}</span></td>
+                          <td style={{...S.td,fontWeight:700,color:P.text,maxWidth:150}}>{inv.name}</td>
+                          <td style={{...S.td,fontWeight:700,color:P.gold}}>{inv.ticker||<span style={{color:P.muted,fontWeight:400}}>—</span>}</td>
+                          <td style={{...S.td,fontWeight:800,color:P.invest}}>{fmt(inv.amount)}</td>
+                          <td style={S.td}>
+                            {price
+                              ? <span style={{color:P.surplus,fontWeight:700}}>{fmt(price)}</span>
+                              : <span style={{color:P.muted,fontSize:11}}>{inv.ticker?"buscando...":"—"}</span>}
+                          </td>
+                          <td style={{...S.td,fontWeight:900,color:P.gold}}>{fmt(curVal)}</td>
+                          <td style={S.td}>
+                            {inv.ticker&&price&&inv.quantity?(
+                              <span style={{fontWeight:700,color:gain>=0?P.income:P.expense}}>
+                                {gain>=0?"+":""}{fmt(gain)} ({gainPct}%)
+                              </span>
+                            ):<span style={{color:P.muted,fontSize:11}}>—</span>}
+                          </td>
+                          <td style={S.td}><button style={S.btnD} onClick={()=>delInv(inv.id)}>✕</button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{display:"flex",gap:20,marginTop:12,padding:"10px 10px 0",borderTop:`1px solid ${P.border}`,flexWrap:"wrap"}}>
+                <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Aportado: <strong style={{color:P.invest}}>{fmt(totInv)}</strong></span>
+                <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Valor Atual: <strong style={{color:P.gold}}>{fmt(totalCurrentValue)}</strong></span>
+                <span style={{fontSize:13,color:P.sub,fontWeight:600}}>Resultado: <strong style={{color:totalGain>=0?P.income:P.expense}}>{totalGain>=0?"+":""}{fmt(totalGain)}</strong></span>
+              </div>
             </div>
-          </div>}
+          )}
           {invs.length===0&&<div style={{...S.card,marginTop:14,textAlign:"center",color:P.muted,padding:40,fontSize:14}}>Nenhum investimento cadastrado ainda.</div>}
         </>}
 
@@ -1236,27 +1424,18 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
             {invs.length>0?(
               <div style={S.card}>
-                <div style={S.secT}>Patrimônio por Tipo de Ativo — 12 meses</div>
+                <div style={S.secT}>Patrimônio por Tipo de Ativo</div>
                 <ResponsiveContainer width="100%" height={mob?200:240}>
-                  <AreaChart data={investByType}>
-                    <defs>
-                      {investTypes.map((t,i)=>(
-                        <linearGradient key={t} id={`gfig${i}`} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.35}/>
-                          <stop offset="100%" stopColor={PIE_C[i%PIE_C.length]} stopOpacity={0.05}/>
-                        </linearGradient>
-                      ))}
-                    </defs>
+                  <BarChart data={investAccum}>
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
-                    <XAxis dataKey="mes" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
-                    <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={70}/>
+                    <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                    <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={60}/>
                     <Tooltip content={<CTooltip/>}/>
                     <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
                     {investTypes.map((t,i)=>(
-                      <Area key={t} type="monotone" dataKey={t} stackId="1"
-                        stroke={PIE_C[i%PIE_C.length]} fill={`url(#gfig${i})`} strokeWidth={2}/>
+                      <Bar key={t} dataKey={t} stackId="a" fill={PIE_C[i%PIE_C.length]} radius={i===investTypes.length-1?[4,4,0,0]:[0,0,0,0]}/>
                     ))}
-                  </AreaChart>
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
             ):(
@@ -1413,6 +1592,28 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
         </>}
 
       </main>
+
+      {/* ── Modal de Confirmação ── */}
+      {confirmModal&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+          onClick={e=>{if(e.target===e.currentTarget)setConfirmModal(null);}}>
+          <div style={{...S.card,width:"100%",maxWidth:420,background:"#0f0f18",border:`1px solid rgba(${hexRgb(P.income)},0.3)`}}>
+            <div style={{fontSize:15,fontWeight:900,color:P.income,marginBottom:4}}>✓ Confirmar Pagamento</div>
+            <div style={{fontSize:12,color:P.sub,marginBottom:20,fontWeight:600}}>{confirmModal.note} · {lbl(confirmModal.ym)}</div>
+            <div style={{marginBottom:16}}>
+              <label style={{...S.fLbl,display:"block",marginBottom:6}}>Valor Real (R$)</label>
+              <input style={{...S.inp,fontSize:16,padding:"12px 14px"}} type="number"
+                value={confirmModal.amount}
+                onChange={e=>setConfirmModal(f=>({...f,amount:+e.target.value}))}/>
+              <div style={{fontSize:11,color:P.muted,marginTop:5}}>Ajuste se o valor real diferiu do previsto.</div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button style={{...S.btn(P.income),flex:1,padding:"12px"}} onClick={confirmTx}>✓ Confirmar como Pago</button>
+              <button style={{...S.btn(P.muted),padding:"12px 16px",color:P.text}} onClick={()=>setConfirmModal(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
