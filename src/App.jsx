@@ -396,19 +396,8 @@ function Dashboard({ session }) {
     if (invs.length > 0) fetchMarketPrices(invs);
   }, [invs.length]); // eslint-disable-line
 
-  // Compute current value for an investment
-  const currentValue = (inv) => {
-    const t = inv.ticker?.toUpperCase();
-    if (t && marketPrices[t] && inv.quantity) {
-      return marketPrices[t] * +inv.quantity;
-    }
-    return +inv.amount; // fallback: valor aportado
-  };
-
-  const totalCurrentValue = invs.reduce((s,i) => s + currentValue(i), 0);
-  const totalGain = totalCurrentValue - totInv;
-
   const loadAll = useCallback(async () => {
+    setDbLoading(true);
     const [{ data: t }, { data: r }, { data: i }] = await Promise.all([
       supabase.from("transactions").select("*").eq("user_id", userId).order("ym"),
       supabase.from("recurrents").select("*").eq("user_id", userId),
@@ -470,6 +459,14 @@ function Dashboard({ session }) {
   const totExp  = filtered.filter(e => e.type === "expense").reduce((s, e) => s + +e.amount, 0);
   const surplus = totInc - totExp;
   const totInv  = invs.reduce((s, i) => s + +i.amount, 0);
+
+  const currentValue = (inv) => {
+    const t = inv.ticker?.toUpperCase();
+    if (t && marketPrices[t] && inv.quantity) return marketPrices[t] * +inv.quantity;
+    return +inv.amount;
+  };
+  const totalCurrentValue = invs.reduce((s,i) => s + currentValue(i), 0);
+  const totalGain = totalCurrentValue - totInv;
 
   const monthSummary = useMemo(() => {
     const map = {};
