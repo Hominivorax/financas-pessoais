@@ -1617,6 +1617,3 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
     </div>
   );
 }
-
-
-
