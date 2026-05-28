@@ -407,7 +407,8 @@ function Dashboard({ session }) {
 
   const totalCurrentValue = invs.reduce((s,i) => s + currentValue(i), 0);
   const totalGain = totalCurrentValue - totInv;
-    setDbLoading(true);
+
+  const loadAll = useCallback(async () => {
     const [{ data: t }, { data: r }, { data: i }] = await Promise.all([
       supabase.from("transactions").select("*").eq("user_id", userId).order("ym"),
       supabase.from("recurrents").select("*").eq("user_id", userId),
