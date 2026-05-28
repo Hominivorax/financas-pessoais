@@ -420,7 +420,7 @@ function Dashboard({ session }) {
   };
 
   // ── Forms ──────────────────────────────────────────────────────────────
-  const E0 = { modo:"unico", type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"2", endYM:addM(TODAY_YM,11) };
+  const E0 = { modo:"unico", type:"expense", cat:"Moradia", amount:"", ym:TODAY_YM, note:"", parcelas:"1", endYM:addM(TODAY_YM,11) };
   const R0 = { type:"expense", cat:"Moradia", amount:"", startYM:TODAY_YM, endYM:addM(TODAY_YM,11), note:"" };
   const I0 = { type:"Renda Fixa", name:"", amount:"", ym:TODAY_YM, returnRate:"", ticker:"", quantity:"" };
   const [txF, setTxF] = useState(E0);
@@ -560,7 +560,8 @@ function Dashboard({ session }) {
 
   // ── CRUD ───────────────────────────────────────────────────────────────
   const addTx = async () => {
-    const amt = +txF.amount, parc = Math.max(1, parseInt(txF.parcelas)||1);
+    const amt = +txF.amount;
+    const parc = (txF.modo==="unico"||txF.modo==="receita") ? 1 : Math.max(2, parseInt(txF.parcelas)||2);
     if (!amt||!txF.ym) return notify("Preencha valor e mês.",false);
     const parcAmt = +(amt/parc).toFixed(2);
     const gid = parc>1?`G${Date.now()}`:null;
