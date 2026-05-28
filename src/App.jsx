@@ -562,6 +562,7 @@ function Dashboard({ session }) {
   const addTx = async () => {
     const amt = +txF.amount;
     const parc = (txF.modo==="unico"||txF.modo==="receita") ? 1 : Math.max(2, parseInt(txF.parcelas)||2);
+    console.log("addTx →", {modo:txF.modo, parc, amt, ym:txF.ym});
     if (!amt||!txF.ym) return notify("Preencha valor e mês.",false);
     const parcAmt = +(amt/parc).toFixed(2);
     const gid = parc>1?`G${Date.now()}`:null;
