@@ -600,6 +600,30 @@ function Dashboard({ session }) {
   const delInv = async id => { await supabase.from("investments").delete().eq("id",id); setInvs(p=>p.filter(i=>i.id!==id)); };
   const logout = async () => { await supabase.auth.signOut(); };
 
+  // ── Exportar todos os dados em JSON ────────────────────────────────────
+  const exportData = () => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const payload = {
+      exported_at: new Date().toISOString(),
+      user_email: session.user.email,
+      user_id: userId,
+      counts: { transactions: txs.length, recurrents: recs.length, investments: invs.length },
+      transactions: txs,
+      recurrents: recs,
+      investments: invs,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `financas-export-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notify("Dados exportados ✓");
+  };
+
   // ── Import via IA ─────────────────────────────────────────────────────
   const IMPORT_PROMPT = `Analise este extrato de investimentos e extraia TODOS os ativos com posição atual (não vendidos/resgatados totalmente).
 Retorne SOMENTE um JSON array válido, sem markdown, sem texto adicional:
@@ -750,7 +774,10 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
             </button>
           ))}
         </nav>
-        <button onClick={logout} style={{ background:"transparent", border:`1px solid ${P.border}`, borderRadius:8, padding:"5px 10px", color:P.muted, fontSize:12, cursor:"pointer", fontWeight:600, whiteSpace:"nowrap" }}>Sair</button>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <button onClick={exportData} title="Baixar todos os seus dados em JSON" style={{ background:"transparent", border:`1px solid rgba(${hexRgb(P.gold)},0.4)`, borderRadius:8, padding:"5px 10px", color:P.gold, fontSize:12, cursor:"pointer", fontWeight:600, whiteSpace:"nowrap" }}>{mob?"⬇":"⬇ Exportar"}</button>
+          <button onClick={logout} style={{ background:"transparent", border:`1px solid ${P.border}`, borderRadius:8, padding:"5px 10px", color:P.muted, fontSize:12, cursor:"pointer", fontWeight:600, whiteSpace:"nowrap" }}>Sair</button>
+        </div>
       </header>
 
       <main style={{ padding: mob?"14px":"20px 24px", maxWidth:1500, margin:"0 auto" }}>
