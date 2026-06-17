@@ -360,21 +360,25 @@ function Dashboard({ session }) {
     setMarketLoading(true);
     const prices = {};
 
-    // Brazilian stocks, FIIs, ETFs, BDRs → brapi.dev (free, no key needed)
-    const brTickers = investments
-      .filter(i => i.ticker && ["Ações","FIIs","ETF","BDR"].includes(i.type))
-      .map(i => i.ticker.toUpperCase().trim())
-      .filter(Boolean);
+    // Ações, FIIs, ETFs, BDRs (brasileiros E internacionais) → /api/quote
+    // O proxy busca no Yahoo Finance e devolve preço + moeda + câmbio USD/BRL.
+    const mktTickers = [...new Set(
+      investments
+        .filter(i => i.ticker && ["Ações","FIIs","ETF","BDR"].includes(i.type))
+        .map(i => i.ticker.toUpperCase().trim())
+        .filter(Boolean)
+    )];
 
-    if (brTickers.length > 0) {
+    if (mktTickers.length > 0) {
       try {
-        const tickers = [...new Set(brTickers)].join(",");
-        const res = await fetch(`https://brapi.dev/api/quote/${tickers}?token=demo`);
+        const res = await fetch(`/api/quote?tickers=${mktTickers.join(",")}`);
         const data = await res.json();
-        (data.results || []).forEach(r => {
-          if (r.regularMarketPrice) prices[r.symbol] = r.regularMarketPrice;
+        const fx = data.usdbrl || 1;
+        Object.entries(data.prices || {}).forEach(([tk, q]) => {
+          // converte pra BRL quando o ativo é cotado em dólar
+          prices[tk] = q.currency === "BRL" ? q.price : q.price * fx;
         });
-      } catch(e) { console.warn("brapi fetch error", e); }
+      } catch(e) { console.warn("quote proxy error", e); }
     }
 
     // Crypto → CoinGecko (free, no key needed)
