@@ -47,22 +47,30 @@ const CATS_EXP = [
   "Telefone","Outros"
 ];
 const CATS_INC = ["Receita Profissional","Outras Receitas"];
-const INVEST_T = ["Renda Fixa","Ações","FIIs","Cripto","Poupança","Tesouro Direto"];
+const INVEST_T = ["Renda Fixa","Ações","FIIs","ETF","BDR","Fundos","Cripto","Poupança","Tesouro Direto"];
 
 function catExp(n) {
   const l = n.toLowerCase();
   if (/financiamento|aluguel apart|condomín|seguro resid/.test(l)) return "Moradia";
   if (/marcenaria|vidraçar|adriano|ar condic|geladei|microond|aquecedor|box banh|sofá|cama box|iluminaç|rodapé|revestim|instalação|arandela|varal|michelle|viacor|miudez|depósit|cooktop/.test(l)) return "Obra/Reforma";
   if (/enel|vivo|microsoft|amazon prime|netflix|youtube|google one|spotify|claude|estadão|ifood club/.test(l)) return "Assinaturas";
-  if (/contabilizei|imposto|apm|crefito|cremesp|consultoria/.test(l)) return "Prof./Impostos";
-  if (/prudential|metlife|seguro de vida|seguro veic|ipva|licenc/.test(l)) return "Seguros";
+  if (/contabilizei|imposto|apm|crefito|cremesp|consultoria/.test(l)) return "Impostos";
+  if (/prudential|metlife|seguro de vida|seguro veic|ipva|licenc/.test(l)) return "Seguros / Plano de Saúde";
   if (/mercado|ifood\/rest|kobe/.test(l)) return "Alimentação";
   if (/gasolina|pedágio|manutenção veí|barbearia/.test(l)) return "Transporte";
   if (/viagem|cirque/.test(l)) return "Lazer";
-  if (/instrumentação/.test(l)) return "Educação Filhos";
+  if (/instrumentação/.test(l)) return "Educação / Filhos";
   if (/lbv/.test(l)) return "Doações";
   return "Outros";
 }
+
+// Unifica rótulos antigos (gravados antes da padronização) com os atuais
+const NORM_CAT = {
+  "Prof./Impostos": "Impostos",
+  "Seguros": "Seguros / Plano de Saúde",
+  "Educação Filhos": "Educação / Filhos",
+};
+const normCat = c => NORM_CAT[c] || c;
 
 // ── Palette — brighter, higher contrast ───────────────────────────────────────
 const P = {
@@ -372,7 +380,7 @@ function Dashboard({ session }) {
     // Crypto → CoinGecko (free, no key needed)
     const cryptoInvs = investments.filter(i => i.type === "Cripto" && i.ticker);
     if (cryptoInvs.length > 0) {
-      const cryptoMap = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana", BNB:"binancecoin", ADA:"cardano", DOT:"polkadot", MATIC:"matic-network" };
+      const cryptoMap = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana", BNB:"binancecoin", ADA:"cardano", DOT:"polkadot", MATIC:"matic-network", USDC:"usd-coin", USDT:"tether", XRP:"ripple", DOGE:"dogecoin" };
       const ids = cryptoInvs.map(i => cryptoMap[i.ticker?.toUpperCase()] || i.ticker?.toLowerCase()).filter(Boolean);
       if (ids.length > 0) {
         try {
@@ -403,7 +411,9 @@ function Dashboard({ session }) {
       supabase.from("recurrents").select("*").eq("user_id", userId),
       supabase.from("investments").select("*").eq("user_id", userId),
     ]);
-    setTxs(t || []); setRecs(r || []); setInvs(i || []);
+    setTxs((t || []).map(x => ({ ...x, cat: normCat(x.cat) })));
+    setRecs((r || []).map(x => ({ ...x, cat: normCat(x.cat) })));
+    setInvs(i || []);
     setDbLoading(false);
   }, [userId]);
 
@@ -627,14 +637,14 @@ function Dashboard({ session }) {
   // ── Import via IA ─────────────────────────────────────────────────────
   const IMPORT_PROMPT = `Analise este extrato de investimentos e extraia TODOS os ativos com posição atual (não vendidos/resgatados totalmente).
 Retorne SOMENTE um JSON array válido, sem markdown, sem texto adicional:
-[{"name":"nome completo ou ticker","type":"Ações|FIIs|Renda Fixa|Fundos|ETF|BDR|Cripto","amount":valor_number,"return_rate":taxa_anual_number,"ym":"AAAA-MM"}]
+[{"name":"nome completo ou ticker","ticker":"código de negociação ou null","type":"Ações|FIIs|Renda Fixa|Fundos|ETF|BDR|Cripto","amount":valor_number,"return_rate":taxa_anual_number,"ym":"AAAA-MM"}]
 Regras:
 - Ações/ETFs/BDRs/FIIs listados: amount = preço_médio × quantidade
 - Renda Fixa (CRI/CRA/Debênture/CDB/LCI/LCA): amount = valor_de_compra, return_rate = taxa_anual_percentual (ex: 12.5)
 - Fundos de investimento: amount = valor_aplicado_ajustado
 - ym = mês da compra no formato AAAA-MM (se indisponível, use o mês atual do extrato)
 - return_rate = 0 se não disponível
-- Inclua ticker/código no name quando possível
+- ticker = código de negociação em maiúsculas (PETR4, HGLG11, BTC, etc.) para Ações/FIIs/ETF/BDR/Cripto; use null para Renda Fixa/Fundos sem código
 Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
   const handleImportFile = async (file) => {
@@ -686,6 +696,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
       setImportItems(parsed.map((item,i)=>({
         ...item, _id:i, _sel:true,
+        ticker:      item.ticker ? String(item.ticker).toUpperCase().trim() : "",
         amount:      Math.round((+item.amount||0)*100)/100,
         return_rate: +item.return_rate || 0,
         ym:          item.ym || TODAY_YM,
@@ -701,6 +712,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
     setImportSaving(true);
     const rows = importItems.filter(i=>i._sel).map(i=>({
       user_id:userId, type:i.type, name:i.name,
+      ticker:(i.ticker||"").trim()||null,
       amount:i.amount, ym:i.ym, return_rate:i.return_rate
     }));
     await supabase.from('investments').insert(rows);
@@ -1563,7 +1575,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                           checked={importItems.length>0&&importItems.every(i=>i._sel)}
                           onChange={e=>setImportItems(p=>p.map(i=>({...i,_sel:e.target.checked})))}/>
                       </th>
-                      {["Nome / Ticker","Tipo","Valor (R$)","Retorno a.a. %","Mês Aporte"].map(h=><th key={h} style={S.th}>{h}</th>)}
+                      {["Nome","Ticker","Tipo","Valor (R$)","Retorno a.a. %","Mês Aporte"].map(h=><th key={h} style={S.th}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -1576,6 +1588,10 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                         <td style={S.td}>
                           <input style={{...S.inp,fontSize:12,padding:"5px 8px"}} value={item.name}
                             onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,name:e.target.value}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:100,textTransform:"uppercase"}} placeholder="—" value={item.ticker||""}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,ticker:e.target.value.toUpperCase()}:i))}/>
                         </td>
                         <td style={S.td}>
                           <select style={{...S.sel,fontSize:12,padding:"5px 8px"}} value={item.type}
