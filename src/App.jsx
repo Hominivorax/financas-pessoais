@@ -325,6 +325,9 @@ function Dashboard({ session }) {
   const [confirmModal, setConfirmModal] = useState(null); // {id, note, amount, ym}
   const [searchTxt, setSearchTxt] = useState("");          // busca por texto em Lançamentos
   const [selTx, setSelTx] = useState(() => new Set());     // ids selecionados p/ edição em lote
+  const [budgets, setBudgets] = useState([]);              // tetos de orçamento por categoria
+  const [snapshots, setSnapshots] = useState([]);          // fotos mensais do patrimônio
+  const [budgetForm, setBudgetForm] = useState({ cat:"", amount:"" });
 
   const openConfirm = (e) => setConfirmModal({id:e.id, note:e.note, amount:+e.amount, ym:e.ym});
 
@@ -415,14 +418,18 @@ function Dashboard({ session }) {
 
   const loadAll = useCallback(async () => {
     setDbLoading(true);
-    const [{ data: t }, { data: r }, { data: i }] = await Promise.all([
+    const [{ data: t }, { data: r }, { data: i }, { data: b }, { data: s }] = await Promise.all([
       supabase.from("transactions").select("*").eq("user_id", userId).order("ym"),
       supabase.from("recurrents").select("*").eq("user_id", userId),
       supabase.from("investments").select("*").eq("user_id", userId),
+      supabase.from("budgets").select("*").eq("user_id", userId),
+      supabase.from("snapshots").select("*").eq("user_id", userId).order("ym"),
     ]);
     setTxs((t || []).map(x => ({ ...x, cat: normCat(x.cat) })));
     setRecs((r || []).map(x => ({ ...x, cat: normCat(x.cat) })));
     setInvs(i || []);
+    setBudgets(b || []);
+    setSnapshots(s || []);
     setDbLoading(false);
   }, [userId]);
 
@@ -501,6 +508,30 @@ function Dashboard({ session }) {
   const totalCurrentValue = invs.reduce((s,i) => s + currentValue(i), 0);
   const totalGain = totalCurrentValue - totInv;
 
+  // Saldo de caixa acumulado (receitas - despesas confirmadas) e patrimônio líquido
+  const cashBalance = useMemo(() =>
+    txs.filter(t => t.confirmed).reduce((s,t) => s + (t.type==="income" ? +t.amount : -+t.amount), 0)
+  , [txs]);
+  const netWorth = totalCurrentValue + cashBalance;
+
+  // Média dos últimos 3 meses de uma categoria (sugestão de teto de orçamento)
+  const avg3 = (cat) => {
+    const months = [addM(TODAY_YM,-3), addM(TODAY_YM,-2), addM(TODAY_YM,-1)];
+    const total = txs.filter(t => t.type==="expense" && t.cat===cat && months.includes(t.ym))
+                     .reduce((s,t) => s + +t.amount, 0);
+    return total / 3;
+  };
+
+  // Realizado do mês atual vs teto definido
+  const budgetStatus = useMemo(() =>
+    budgets.map(b => {
+      const spent = txs.filter(t => t.type==="expense" && t.cat===b.cat && t.ym===TODAY_YM)
+                       .reduce((s,t) => s + +t.amount, 0);
+      const pct = +b.limit_amount > 0 ? spent / +b.limit_amount * 100 : 0;
+      return { ...b, spent, pct };
+    }).sort((a,b) => b.pct - a.pct)
+  , [budgets, txs]);
+
   const monthSummary = useMemo(() => {
     const map = {};
     allE.forEach(e => {
@@ -517,6 +548,19 @@ function Dashboard({ session }) {
     filtered.filter(e => e.type === "expense").forEach(e => { map[e.cat] = (map[e.cat]||0) + +e.amount; });
     return Object.entries(map).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
   }, [filtered]);
+
+  // Dados do Sankey: Receita → categorias de Despesa (top 6 + Outros) + Investimentos + Sobra
+  const sankeyData = useMemo(() => {
+    const inc = totInc;
+    if (inc <= 0) return null;
+    const top = expCats.slice(0, 6);
+    const restVal = expCats.slice(6).reduce((s,c)=>s + c.value, 0);
+    const dests = top.map(c => ({ name:c.name, value:c.value }));
+    if (restVal > 0) dests.push({ name:"Outros gastos", value:restVal });
+    const sobra = inc - totExp;
+    if (sobra > 0) dests.push({ name:"Sobra", value:sobra, kind:"sobra" });
+    return { inc, dests: dests.filter(d=>d.value>0) };
+  }, [totInc, totExp, expCats]);
 
   // Média dos últimos 3 meses por categoria variável (base da projeção)
   const varAvg = useMemo(() => {
@@ -666,6 +710,29 @@ function Dashboard({ session }) {
     if (!window.confirm(`Excluir ${ids.length} lançamento(s)? Esta ação não pode ser desfeita.`)) return;
     await supabase.from("transactions").delete().in("id", ids);
     await loadAll(); clearSel(); notify(`${ids.length} excluído(s)`);
+  };
+
+  // ── Orçamento ──────────────────────────────────────────────────────────
+  const saveBudget = async (cat, amount) => {
+    const amt = +amount; if (!cat || !amt) return;
+    const existing = budgets.find(b => b.cat === cat);
+    if (existing) await supabase.from("budgets").update({ limit_amount:amt }).eq("id", existing.id);
+    else          await supabase.from("budgets").insert({ user_id:userId, cat, limit_amount:amt });
+    await loadAll(); setBudgetForm({ cat:"", amount:"" }); notify(`Teto de ${cat} definido ✓`);
+  };
+  const delBudget = async (id) => {
+    await supabase.from("budgets").delete().eq("id", id);
+    await loadAll();
+  };
+
+  // ── Foto mensal do patrimônio (snapshot) ───────────────────────────────
+  const recordSnapshot = async () => {
+    const ym = TODAY_YM;
+    const row = { user_id:userId, ym, invested:totInv, portfolio_value:totalCurrentValue, net_worth:netWorth };
+    const existing = snapshots.find(s => s.ym === ym);
+    if (existing) await supabase.from("snapshots").update(row).eq("id", existing.id);
+    else          await supabase.from("snapshots").insert(row);
+    await loadAll(); notify("Foto do mês salva ✓");
   };
   const delRec = async id => { await supabase.from("recurrents").delete().eq("id",id); setRecs(p=>p.filter(r=>r.id!==id)); };
   const delInv = async id => { await supabase.from("investments").delete().eq("id",id); setInvs(p=>p.filter(i=>i.id!==id)); };
@@ -930,6 +997,77 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
               ))}
             </div>
           </div>
+
+          {/* Orçamento do mês */}
+          <div style={{...S.card, marginTop:14}}>
+            <div style={S.secT}>Orçamento do Mês <span style={{fontSize:11,color:P.muted,fontWeight:500,textTransform:"none",letterSpacing:0}}>— {lbl(TODAY_YM)}</span></div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginTop:10,marginBottom:budgetStatus.length?18:0}}>
+              <select style={{...S.sel,width:mob?"100%":190}} value={budgetForm.cat} onChange={e=>setBudgetForm(f=>({...f,cat:e.target.value}))}>
+                <option value="">Categoria...</option>
+                {CATS_EXP.map(c=><option key={c}>{c}</option>)}
+              </select>
+              <input style={{...S.inp,width:mob?"100%":170}} type="number"
+                placeholder={budgetForm.cat?`sugerido ${fmt(avg3(budgetForm.cat))}`:"Teto (R$)"}
+                value={budgetForm.amount} onChange={e=>setBudgetForm(f=>({...f,amount:e.target.value}))}/>
+              <button style={{...S.btn(P.gold),padding:"9px 16px"}}
+                onClick={()=>saveBudget(budgetForm.cat, budgetForm.amount || avg3(budgetForm.cat))}>Definir teto</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:11}}>
+              {budgetStatus.map(b=>{
+                const color = b.pct>=100?P.expense:b.pct>=80?P.gold:P.income;
+                return(
+                  <div key={b.id}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+                      <span style={{fontSize:12,fontWeight:700,color:P.text}}>{b.cat}</span>
+                      <span style={{fontSize:12,fontWeight:700,color}}>
+                        {fmt(b.spent)} <span style={{color:P.muted,fontWeight:500}}>/ {fmt(b.limit_amount)} · {b.pct.toFixed(0)}%</span>
+                        <button style={{...S.btnD,marginLeft:8,padding:"1px 7px"}} onClick={()=>delBudget(b.id)}>✕</button>
+                      </span>
+                    </div>
+                    <div style={{height:9,borderRadius:6,background:"rgba(255,255,255,0.06)",overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${Math.min(b.pct,100)}%`,background:color,borderRadius:6,transition:"width .3s"}}/>
+                    </div>
+                  </div>
+                );
+              })}
+              {budgetStatus.length===0&&<div style={{color:P.muted,fontSize:13}}>Defina um teto por categoria para acompanhar quanto já gastou no mês. O valor sugerido vem da sua média dos últimos 3 meses.</div>}
+            </div>
+          </div>
+
+          {/* Sankey: para onde vai o dinheiro */}
+          {sankeyData&&(
+            <div style={{...S.card, marginTop:14}}>
+              <div style={S.secT}>Para Onde Vai o Dinheiro <span style={{fontSize:10,color:P.muted,fontWeight:500,textTransform:"none",letterSpacing:0}}>— {filterYM==="all"?"todo o período":lbl(filterYM)}</span></div>
+              <div style={{overflowX:"auto"}}>
+              {(()=>{
+                const dests=sankeyData.dests, W=720, H=Math.max(220,dests.length*46), nodeW=13;
+                const sum=dests.reduce((s,d)=>s+d.value,0)||1;
+                const gap=10, usable=H-gap*Math.max(0,dests.length-1);
+                let lY=0, rY=0; const rows=dests.map((d,i)=>{const h=d.value/sum*usable;const o={d,h,lY,rY,color:d.kind==="sobra"?P.income:PIE_C[i%PIE_C.length]};lY+=h;rY+=h+gap;return o;});
+                const xL=92, xR=W-150;
+                return(
+                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{minWidth:mob?560:0}}>
+                    <rect x={xL} y={0} width={nodeW} height={lY} rx={3} fill={P.income}/>
+                    <text x={xL-8} y={lY/2-6} textAnchor="end" fontSize="13" fontWeight="800" fill={P.income}>Receitas</text>
+                    <text x={xL-8} y={lY/2+11} textAnchor="end" fontSize="10" fill={P.muted}>{fmt(sankeyData.inc)}</text>
+                    {rows.map((r,i)=>{
+                      const x1=xL+nodeW, x2=xR, mx=(x1+x2)/2;
+                      const path=`M${x1},${r.lY} C${mx},${r.lY} ${mx},${r.rY} ${x2},${r.rY} L${x2},${r.rY+r.h} C${mx},${r.rY+r.h} ${mx},${r.lY+r.h} ${x1},${r.lY+r.h} Z`;
+                      return(
+                        <g key={i}>
+                          <path d={path} fill={r.color} fillOpacity={0.32}/>
+                          <rect x={xR} y={r.rY} width={nodeW} height={r.h} rx={3} fill={r.color}/>
+                          <text x={xR+nodeW+8} y={r.rY+r.h/2-3} dominantBaseline="middle" fontSize="12" fontWeight="700" fill={P.text}>{r.d.name}</text>
+                          <text x={xR+nodeW+8} y={r.rY+r.h/2+12} dominantBaseline="middle" fontSize="10" fill={P.muted}>{fmt(r.d.value)}</text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                );
+              })()}
+              </div>
+            </div>
+          )}
         </>}
 
         {/* ══ LANÇAMENTOS ════════════════════════════════════════════════ */}
@@ -1436,6 +1574,37 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
               </ResponsiveContainer>
             </div>
           )}
+
+          {/* Patrimônio ao longo do tempo */}
+          <div style={{...S.card,marginTop:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8,marginBottom:12}}>
+              <div style={S.secT}>Patrimônio ao Longo do Tempo</div>
+              <button style={{...S.btn(P.gold),padding:"7px 14px",fontSize:12}} onClick={recordSnapshot}>📸 Salvar foto deste mês</button>
+            </div>
+            {snapshots.length>0?(
+              <ResponsiveContainer width="100%" height={mob?200:260}>
+                <AreaChart data={snapshots.map(s=>({...s,label:lbl(s.ym)}))}>
+                  <defs>
+                    <linearGradient id="nwGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={P.gold} stopOpacity={0.35}/>
+                      <stop offset="100%" stopColor={P.gold} stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false}/>
+                  <XAxis dataKey="label" tick={{fontSize:10,fill:P.muted,fontWeight:600}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fontSize:10,fill:P.muted}} axisLine={false} tickLine={false} tickFormatter={v=>"R$"+(v/1000).toFixed(0)+"k"} width={65}/>
+                  <Tooltip content={<CTooltip/>}/>
+                  <Legend wrapperStyle={{fontSize:12,color:P.sub,fontWeight:600}}/>
+                  <Area type="monotone" dataKey="net_worth" name="Patrimônio" stroke={P.gold} strokeWidth={2} fill="url(#nwGrad)"/>
+                  <Area type="monotone" dataKey="portfolio_value" name="Carteira" stroke={P.invest} strokeWidth={2} fillOpacity={0}/>
+                </AreaChart>
+              </ResponsiveContainer>
+            ):(
+              <div style={{color:P.muted,fontSize:13,padding:"6px 0"}}>
+                Clique em <strong style={{color:P.gold}}>"Salvar foto deste mês"</strong> para registrar seu patrimônio atual ({fmt(netWorth)} = carteira {fmt(totalCurrentValue)} + caixa {fmt(cashBalance)}). Repita uma vez por mês e a curva de evolução vai se formando.
+              </div>
+            )}
+          </div>
 
           {/* Tabela da carteira */}
           {invs.length>0&&(
