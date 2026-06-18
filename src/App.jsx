@@ -1040,25 +1040,36 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
               <div style={S.secT}>Para Onde Vai o Dinheiro <span style={{fontSize:10,color:P.muted,fontWeight:500,textTransform:"none",letterSpacing:0}}>— {filterYM==="all"?"todo o período":lbl(filterYM)}</span></div>
               <div style={{overflowX:"auto"}}>
               {(()=>{
-                const dests=sankeyData.dests, W=720, H=Math.max(220,dests.length*46), nodeW=13;
+                const dests=sankeyData.dests, n=dests.length, MIN=34, W=820, nodeW=13;
+                const H=Math.max(300, n*MIN+44);
                 const sum=dests.reduce((s,d)=>s+d.value,0)||1;
-                const gap=10, usable=H-gap*Math.max(0,dests.length-1);
-                let lY=0, rY=0; const rows=dests.map((d,i)=>{const h=d.value/sum*usable;const o={d,h,lY,rY,color:d.kind==="sobra"?P.income:PIE_C[i%PIE_C.length]};lY+=h;rY+=h+gap;return o;});
-                const xL=92, xR=W-150;
+                const gap=8, usable=H-gap*Math.max(0,n-1);
+                let lY=0, rY=0;
+                const rows=dests.map((d,i)=>{const h=d.value/sum*usable;const o={d,h,lY,rY,cy:rY+h/2,color:d.kind==="sobra"?P.income:PIE_C[i%PIE_C.length]};lY+=h;rY+=h+gap;return o;});
+                // Anti-colisão dos rótulos: garante MIN de distância entre centros
+                const top=18, bot=H-18;
+                for(let i=1;i<rows.length;i++) if(rows[i].cy < rows[i-1].cy+MIN) rows[i].cy=rows[i-1].cy+MIN;
+                if(rows.length && rows[rows.length-1].cy>bot){
+                  rows[rows.length-1].cy=bot;
+                  for(let i=rows.length-2;i>=0;i--) if(rows[i].cy>rows[i+1].cy-MIN) rows[i].cy=rows[i+1].cy-MIN;
+                }
+                if(rows.length) rows[0].cy=Math.max(rows[0].cy,top);
+                const xL=92, xR=W-218;
                 return(
-                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{minWidth:mob?560:0}}>
+                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{minWidth:mob?640:0}}>
                     <rect x={xL} y={0} width={nodeW} height={lY} rx={3} fill={P.income}/>
                     <text x={xL-8} y={lY/2-6} textAnchor="end" fontSize="13" fontWeight="800" fill={P.income}>Receitas</text>
                     <text x={xL-8} y={lY/2+11} textAnchor="end" fontSize="10" fill={P.muted}>{fmt(sankeyData.inc)}</text>
                     {rows.map((r,i)=>{
-                      const x1=xL+nodeW, x2=xR, mx=(x1+x2)/2;
+                      const x1=xL+nodeW, x2=xR, mx=(x1+x2)/2, ncy=r.rY+r.h/2;
                       const path=`M${x1},${r.lY} C${mx},${r.lY} ${mx},${r.rY} ${x2},${r.rY} L${x2},${r.rY+r.h} C${mx},${r.rY+r.h} ${mx},${r.lY+r.h} ${x1},${r.lY+r.h} Z`;
                       return(
                         <g key={i}>
                           <path d={path} fill={r.color} fillOpacity={0.32}/>
                           <rect x={xR} y={r.rY} width={nodeW} height={r.h} rx={3} fill={r.color}/>
-                          <text x={xR+nodeW+8} y={r.rY+r.h/2-3} dominantBaseline="middle" fontSize="12" fontWeight="700" fill={P.text}>{r.d.name}</text>
-                          <text x={xR+nodeW+8} y={r.rY+r.h/2+12} dominantBaseline="middle" fontSize="10" fill={P.muted}>{fmt(r.d.value)}</text>
+                          {Math.abs(r.cy-ncy)>5&&<line x1={xR+nodeW} y1={ncy} x2={xR+nodeW+9} y2={r.cy} stroke={r.color} strokeOpacity={0.55} strokeWidth={1}/>}
+                          <text x={xR+nodeW+12} y={r.cy-4} dominantBaseline="middle" fontSize="12.5" fontWeight="700" fill={P.text}>{r.d.name}</text>
+                          <text x={xR+nodeW+12} y={r.cy+11} dominantBaseline="middle" fontSize="10" fill={P.muted}>{fmt(r.d.value)}</text>
                         </g>
                       );
                     })}
