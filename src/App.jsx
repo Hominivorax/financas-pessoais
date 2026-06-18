@@ -48,6 +48,8 @@ const CATS_EXP = [
 ];
 const CATS_INC = ["Receita Profissional","Outras Receitas"];
 const INVEST_T = ["Renda Fixa","Ações","FIIs","ETF","BDR","Fundos","Cripto","Poupança","Tesouro Direto"];
+// Categorias variáveis projetadas pela média dos últimos 3 meses no Fluxo de Caixa
+const VAR_PROJ = ["Alimentação","Transporte","Lazer"];
 
 function catExp(n) {
   const l = n.toLowerCase();
@@ -345,6 +347,7 @@ function Dashboard({ session }) {
     return "future";                           // mês futuro
   };
   const [importItems,  setImportItems]  = useState([]);
+  const [importStep,   setImportStep]   = useState("upload"); // upload | loading | preview | done
   const [importError,  setImportError]  = useState(null);
   const [importSaving, setImportSaving] = useState(false);
 
@@ -499,16 +502,36 @@ function Dashboard({ session }) {
     return Object.entries(map).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
   }, [filtered]);
 
+  // Média dos últimos 3 meses por categoria variável (base da projeção)
+  const varAvg = useMemo(() => {
+    const months = [addM(TODAY_YM,-3), addM(TODAY_YM,-2), addM(TODAY_YM,-1)];
+    const avg = {};
+    VAR_PROJ.forEach(cat => {
+      const total = txs
+        .filter(t => t.type === "expense" && t.cat === cat && months.includes(t.ym))
+        .reduce((s,t) => s + +t.amount, 0);
+      avg[cat] = total / months.length;
+    });
+    return avg;
+  }, [txs]);
+
   const cashFlow = useMemo(() =>
     Array.from({length:6},(_,i)=>addM(TODAY_YM,i)).map(ym => {
       const entries = allE.filter(e => e.ym === ym);
       const income  = entries.filter(e=>e.type==="income").reduce((s,e)=>s + +e.amount,0);
-      const expense = entries.filter(e=>e.type==="expense").reduce((s,e)=>s + +e.amount,0);
       const catMap  = {};
+      const estSet  = new Set();
       entries.filter(e=>e.type==="expense").forEach(e=>{catMap[e.cat]=(catMap[e.cat]||0)+ +e.amount;});
-      return { ym, label:lbl(ym), income, expense, saldo:income-expense, entries, cats:Object.entries(catMap).map(([c,v])=>({cat:c,v})).sort((a,b)=>b.v-a.v) };
+      // Projeção: usa a média do trimestre quando NÃO há gasto real na categoria variável naquele mês
+      VAR_PROJ.forEach(cat => {
+        const hasReal = entries.some(e => e.type==="expense" && e.cat===cat);
+        if (!hasReal && varAvg[cat] > 0) { catMap[cat] = varAvg[cat]; estSet.add(cat); }
+      });
+      const expense = Object.values(catMap).reduce((s,v)=>s + v, 0);
+      return { ym, label:lbl(ym), income, expense, saldo:income-expense, entries,
+               cats:Object.entries(catMap).map(([c,v])=>({cat:c,v,est:estSet.has(c)})).sort((a,b)=>b.v-a.v) };
     })
-  , [allE]);
+  , [allE, varAvg]);
 
   // Acumulação real por mês de aporte (sem projeção)
   const investAccum = useMemo(() => {
@@ -1222,9 +1245,9 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                 <div style={{marginTop:14}}>
                   <div style={{display:"grid",gridTemplateColumns:mob?"1fr 1fr":"repeat(auto-fill,minmax(180px,1fr))",gap:7,marginBottom:14}}>
                     {cf.cats.map((c,i)=>(
-                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderRadius:9,background:"rgba(255,255,255,0.04)",border:`1px solid ${P.border}`}}>
-                        <span style={{fontSize:12,color:P.sub,fontWeight:600}}>{c.cat}</span>
-                        <span style={{fontSize:13,fontWeight:800,color:P.expense}}>{fmt(c.v)}</span>
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",borderRadius:9,background:c.est?"rgba(147,197,253,0.06)":"rgba(255,255,255,0.04)",border:`1px solid ${c.est?`rgba(${hexRgb(P.surplus)},0.25)`:P.border}`}}>
+                        <span style={{fontSize:12,color:P.sub,fontWeight:600}}>{c.cat}{c.est&&<span style={{color:P.surplus,fontWeight:700,marginLeft:5,fontSize:10}}>est.</span>}</span>
+                        <span style={{fontSize:13,fontWeight:800,color:c.est?P.surplus:P.expense}}>{fmt(c.v)}</span>
                       </div>
                     ))}
                   </div>
