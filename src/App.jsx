@@ -323,6 +323,8 @@ function Dashboard({ session }) {
   const [filterCat, setFilterCat] = useState("all"); // for drill-down
   const [expandedCF,setExpandedCF]= useState({});
   const [confirmModal, setConfirmModal] = useState(null); // {id, note, amount, ym}
+  const [searchTxt, setSearchTxt] = useState("");          // busca por texto em Lançamentos
+  const [selTx, setSelTx] = useState(() => new Set());     // ids selecionados p/ edição em lote
 
   const openConfirm = (e) => setConfirmModal({id:e.id, note:e.note, amount:+e.amount, ym:e.ym});
 
@@ -464,6 +466,20 @@ function Dashboard({ session }) {
     if (filterCat !== "all") res = res.filter(e => e.cat === filterCat);
     return res;
   }, [allE, filterYM, filterCat]);
+
+  // Linhas visíveis na aba Lançamentos (sem recorrentes virtuais, com busca por texto)
+  const lancRows = useMemo(() =>
+    [...filtered]
+      .filter(e => !e.isRec)
+      .filter(e => !searchTxt || (e.note || "").toLowerCase().includes(searchTxt.toLowerCase()))
+      .sort((a,b) => b.ym.localeCompare(a.ym))
+  , [filtered, searchTxt]);
+
+  // Seleção em lote
+  const toggleSel  = id => setSelTx(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = lancRows.length > 0 && lancRows.every(e => selTx.has(e.id));
+  const toggleAll  = () => setSelTx(allSelected ? new Set() : new Set(lancRows.map(e => e.id)));
+  const clearSel   = () => setSelTx(new Set());
 
   // Drill-down: click pie slice → go to lançamentos filtered by that cat
   const handlePieDrillDown = (data) => {
@@ -633,6 +649,24 @@ function Dashboard({ session }) {
   };
 
   const delTx  = async id => { await supabase.from("transactions").delete().eq("id",id); setTxs(p=>p.filter(t=>t.id!==id)); };
+
+  // ── Operações em lote ──────────────────────────────────────────────────
+  const bulkConfirm = async () => {
+    const ids = [...selTx]; if (!ids.length) return;
+    await supabase.from("transactions").update({ confirmed:true }).in("id", ids);
+    await loadAll(); clearSel(); notify(`${ids.length} confirmado(s) como pago ✓`);
+  };
+  const bulkCat = async (cat) => {
+    const ids = [...selTx]; if (!ids.length || !cat) return;
+    await supabase.from("transactions").update({ cat }).in("id", ids);
+    await loadAll(); clearSel(); notify(`Categoria alterada para "${cat}" ✓`);
+  };
+  const bulkDelete = async () => {
+    const ids = [...selTx]; if (!ids.length) return;
+    if (!window.confirm(`Excluir ${ids.length} lançamento(s)? Esta ação não pode ser desfeita.`)) return;
+    await supabase.from("transactions").delete().in("id", ids);
+    await loadAll(); clearSel(); notify(`${ids.length} excluído(s)`);
+  };
   const delRec = async id => { await supabase.from("recurrents").delete().eq("id",id); setRecs(p=>p.filter(r=>r.id!==id)); };
   const delInv = async id => { await supabase.from("investments").delete().eq("id",id); setInvs(p=>p.filter(i=>i.id!==id)); };
   const logout = async () => { await supabase.auth.signOut(); };
@@ -1051,16 +1085,34 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                   {CATS_EXP.map(c=><option key={c}>{c}</option>)}
                   {CATS_INC.map(c=><option key={c}>{c}</option>)}
                 </select>
+                <input style={{...S.sel,width:mob?"100%":190,cursor:"text"}} placeholder="🔍 Buscar descrição..."
+                  value={searchTxt} onChange={e=>setSearchTxt(e.target.value)}/>
                 {filterCat!=="all"&&(
                   <button style={{...S.btn(P.muted),padding:"8px 12px",fontSize:12,color:P.text}} onClick={()=>setFilterCat("all")}>✕ Limpar</button>
                 )}
               </div>
             </div>
+              {selTx.size>0&&(
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",padding:"10px 14px",margin:"0 0 12px",background:`rgba(${hexRgb(P.gold)},0.08)`,border:`1px solid rgba(${hexRgb(P.gold)},0.3)`,borderRadius:10}}>
+                  <span style={{fontWeight:800,color:P.gold,fontSize:13}}>{selTx.size} selecionado{selTx.size>1?"s":""}</span>
+                  <select style={{...S.sel,width:"auto",padding:"6px 10px",fontSize:12}} value="" onChange={e=>{const v=e.target.value;e.target.value="";bulkCat(v);}}>
+                    <option value="">Mudar categoria…</option>
+                    {CATS_EXP.map(c=><option key={c}>{c}</option>)}
+                    {CATS_INC.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                  <button style={{...S.btn(P.income),padding:"6px 12px",fontSize:12,color:"#08080f"}} onClick={bulkConfirm}>✓ Confirmar pagos</button>
+                  <button style={{...S.btn(P.expense),padding:"6px 12px",fontSize:12}} onClick={bulkDelete}>✕ Excluir</button>
+                  <button style={{...S.btn(P.muted),padding:"6px 12px",fontSize:12,color:P.text}} onClick={clearSel}>Limpar seleção</button>
+                </div>
+              )}
               <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",minWidth:mob?500:0}}>
-                <thead><tr>{["Mês","Tipo","Categoria","Descrição","Valor","Status",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}</tr></thead>
+              <table style={{width:"100%",borderCollapse:"collapse",minWidth:mob?540:0}}>
+                <thead><tr>
+                  <th style={{...S.th,width:32}}><input type="checkbox" checked={allSelected} onChange={toggleAll}/></th>
+                  {["Mês","Tipo","Categoria","Descrição","Valor","Status",""].map((h,i)=><th key={i} style={S.th}>{h}</th>)}
+                </tr></thead>
                 <tbody>
-                  {[...filtered].filter(e=>!e.isRec).sort((a,b)=>b.ym.localeCompare(a.ym)).map(e=>{
+                  {lancRows.map(e=>{
                     const st = txStatus(e);
                     const stStyle = {
                       confirmed: {color:P.income,  label:"✓ Pago"},
@@ -1069,7 +1121,8 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                       future:    {color:P.muted,    label:"◌ Previsto"},
                     }[st];
                     return(
-                      <tr key={e.id} style={{opacity:st==="future"?0.7:1}}>
+                      <tr key={e.id} style={{opacity:st==="future"?0.7:1,background:selTx.has(e.id)?`rgba(${hexRgb(P.gold)},0.07)`:"transparent"}}>
+                        <td style={S.td}><input type="checkbox" checked={selTx.has(e.id)} onChange={()=>toggleSel(e.id)}/></td>
                         <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{lbl(e.ym)}</td>
                         <td style={S.td}><span style={S.bdg(e.type==="income"?P.income:P.expense)}>{e.type==="income"?"↑":"↓"}</span></td>
                         <td style={{...S.td,color:P.sub,fontSize:11,fontWeight:600}}>{e.cat}</td>
