@@ -89,6 +89,23 @@ const P = {
 };
 const PIE_C = ["#fbbf24","#93c5fd","#6ee7a0","#fca5a5","#c4b5fd","#6ee7b7","#fdba74","#f0abfc","#67e8f9","#bef264","#fb923c"];
 
+// ── Rótulo customizado da rosca ───────────────────────────────────────────────
+// Posiciona a % no centro de cada fatia (dominio escuro p/ contraste sobre a cor)
+// e oculta fatias muito pequenas para não sobrepor texto.
+const RAD = Math.PI / 180;
+const renderPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+  if (percent < 0.06) return null;
+  const r = innerRadius + (outerRadius - innerRadius) * 0.5;
+  const x = cx + r * Math.cos(-midAngle * RAD);
+  const y = cy + r * Math.sin(-midAngle * RAD);
+  return (
+    <text x={x} y={y} fill="#0a0a0f" fontSize={11} fontWeight={800}
+      textAnchor="middle" dominantBaseline="central" style={{ pointerEvents: "none" }}>
+      {(percent * 100).toFixed(0)}%
+    </text>
+  );
+};
+
 // ── Seed data ─────────────────────────────────────────────────────────────────
 const DE = [
   ["Financiamento Casa/Familia",[6240,6240,6240,6240,6240,6240,6240,6240,6240,6240,6240,6240]],
@@ -765,14 +782,16 @@ function Dashboard({ session }) {
   // ── Import via IA ─────────────────────────────────────────────────────
   const IMPORT_PROMPT = `Analise este extrato de investimentos e extraia TODOS os ativos com posição atual (não vendidos/resgatados totalmente).
 Retorne SOMENTE um JSON array válido, sem markdown, sem texto adicional:
-[{"name":"nome completo ou ticker","ticker":"código de negociação ou null","type":"Ações|FIIs|Renda Fixa|Fundos|ETF|BDR|Cripto","amount":valor_number,"return_rate":taxa_anual_number,"ym":"AAAA-MM"}]
+[{"name":"nome completo ou ticker","ticker":"código de negociação ou null","type":"Ações|FIIs|Renda Fixa|Fundos|ETF|BDR|Cripto","amount":valor_number,"quantity":quantidade_number_ou_null,"return_rate":taxa_anual_number,"ym":"AAAA-MM"}]
 Regras:
-- Ações/ETFs/BDRs/FIIs listados: amount = preço_médio × quantidade
+- Ações/ETFs/BDRs/FIIs listados: amount = preço_médio × quantidade; quantity = quantidade de cotas/papéis (número, pode ser fracionário)
+- quantity = null para Renda Fixa/Fundos (não tem cotação por cota de mercado)
 - Renda Fixa (CRI/CRA/Debênture/CDB/LCI/LCA): amount = valor_de_compra, return_rate = taxa_anual_percentual (ex: 12.5)
 - Fundos de investimento: amount = valor_aplicado_ajustado
 - ym = mês da compra no formato AAAA-MM (se indisponível, use o mês atual do extrato)
 - return_rate = 0 se não disponível
 - ticker = código de negociação em maiúsculas (PETR4, HGLG11, BTC, etc.) para Ações/FIIs/ETF/BDR/Cripto; use null para Renda Fixa/Fundos sem código
+- Cripto: quantity = quantidade de moedas/tokens (fracionário é permitido)
 Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
   const handleImportFile = async (file) => {
@@ -826,6 +845,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
         ...item, _id:i, _sel:true,
         ticker:      item.ticker ? String(item.ticker).toUpperCase().trim() : "",
         amount:      Math.round((+item.amount||0)*100)/100,
+        quantity:    +item.quantity || null,
         return_rate: +item.return_rate || 0,
         ym:          item.ym || TODAY_YM,
       })));
@@ -841,6 +861,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
     const rows = importItems.filter(i=>i._sel).map(i=>({
       user_id:userId, type:i.type, name:i.name,
       ticker:(i.ticker||"").trim()||null,
+      quantity:+i.quantity||null,
       amount:i.amount, ym:i.ym, return_rate:i.return_rate
     }));
     await supabase.from('investments').insert(rows);
@@ -972,10 +993,11 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                     <Pie data={expCats} cx="50%" cy="50%" innerRadius={mob?45:55} outerRadius={mob?80:90}
                       dataKey="value" nameKey="name" paddingAngle={2}
                       onClick={handlePieDrillDown}
-                      style={{cursor:"pointer"}}
-                      label={({name,percent})=>percent>0.05?`${(percent*100).toFixed(0)}%`:""}
-                      labelLine={false} style={{fontSize:11,fill:P.sub,fontWeight:700,cursor:"pointer"}}>
-                      {expCats.map((_,i)=><Cell key={i} fill={PIE_C[i%PIE_C.length]}/>)}
+                      labelLine={false}
+                      label={renderPieLabel}
+                      isAnimationActive={false}
+                      style={{cursor:"pointer"}}>
+                      {expCats.map((_,i)=><Cell key={i} fill={PIE_C[i%PIE_C.length]} stroke="none"/>)}
                     </Pie>
                     <Tooltip formatter={v=>fmt(v)}/>
                     <Legend wrapperStyle={{fontSize:11,color:P.sub,fontWeight:600}}/>
@@ -1824,10 +1846,10 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
 
             <div style={S.card}>
               <div style={{fontSize:12,color:P.sub,marginBottom:10,fontWeight:600}}>
-                💡 Edite nome, tipo, valor ou taxa antes de salvar. Desmarque itens que não quiser importar.
+                💡 Edite nome, tipo, valor ou taxa antes de salvar. A <strong>Qtde</strong> (cotas/papéis) é o que permite calcular o ganho/perda pela cotação — confira se veio certa para Ações/FIIs/ETF/BDR/Cripto. Desmarque itens que não quiser importar.
               </div>
               <div style={{overflowX:"auto"}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:650}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:720}}>
                   <thead>
                     <tr>
                       <th style={{...S.th,width:36}}>
@@ -1835,7 +1857,7 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                           checked={importItems.length>0&&importItems.every(i=>i._sel)}
                           onChange={e=>setImportItems(p=>p.map(i=>({...i,_sel:e.target.checked})))}/>
                       </th>
-                      {["Nome","Ticker","Tipo","Valor (R$)","Retorno a.a. %","Mês Aporte"].map(h=><th key={h} style={S.th}>{h}</th>)}
+                      {["Nome","Ticker","Qtde","Tipo","Valor (R$)","Retorno a.a. %","Mês Aporte"].map(h=><th key={h} style={S.th}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -1852,6 +1874,10 @@ Retorne APENAS o JSON array, sem nenhum texto adicional.`;
                         <td style={S.td}>
                           <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:100,textTransform:"uppercase"}} placeholder="—" value={item.ticker||""}
                             onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,ticker:e.target.value.toUpperCase()}:i))}/>
+                        </td>
+                        <td style={S.td}>
+                          <input style={{...S.inp,fontSize:12,padding:"5px 8px",width:90}} type="number" step="any" placeholder="—" value={item.quantity??""}
+                            onChange={e=>setImportItems(p=>p.map((i,j)=>j===idx?{...i,quantity:e.target.value===""?null:+e.target.value}:i))}/>
                         </td>
                         <td style={S.td}>
                           <select style={{...S.sel,fontSize:12,padding:"5px 8px"}} value={item.type}
